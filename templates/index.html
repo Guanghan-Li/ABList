@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stock AB List Tracker</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <h1>Stock AB List Tracker</h1>
+      <div class="header-actions">
+        <label for="viewSelector" class="muted">View</label>
+        <select id="viewSelector" class="select">
+          <option value="A" selected>A (trade soon)</option>
+          <option value="B">B (wait)</option>
+          <option value="PA">Stored A</option>
+          <option value="PB">Stored B</option>
+        </select>
+        <button id="refreshBtn" class="btn btn-secondary">Refresh Prices</button>
+        <span id="lastUpdated" class="muted">Last updated: —</span>
+      </div>
+    </header>
+
+    <section class="card">
+      <h2>Add Stock</h2>
+      <form id="addStockForm" class="form-grid">
+        <div class="form-field">
+          <label for="symbol">Symbol</label>
+          <input id="symbol" name="symbol" type="text" placeholder="AAPL" required />
+        </div>
+        <div class="form-field">
+          <label for="initial_price">Initial Price</label>
+          <input id="initial_price" name="initial_price" type="number" step="0.01" placeholder="150.00" required />
+        </div>
+        <div class="form-field">
+          <label for="date_spotted">Date Spotted</label>
+          <input id="date_spotted" name="date_spotted" type="date" />
+        </div>
+        <div class="form-field">
+          <label for="date_bought">Date Bought</label>
+          <input id="date_bought" name="date_bought" type="date" />
+        </div>
+        <div class="form-field">
+          <label for="list_type">List Type</label>
+          <select id="list_type" name="list_type">
+            <option value="A">A (trade soon)</option>
+            <option value="B">B (wait)</option>
+            <option value="PA">Stored A</option>
+            <option value="PB">Stored B</option>
+          </select>
+        </div>
+        <div class="form-field form-field--full">
+          <label for="reason">Reason</label>
+          <textarea id="reason" name="reason" rows="4" placeholder="Why this stock?" ></textarea>
+        </div>
+        <div class="form-actions form-field--full">
+          <button type="submit" class="btn btn-primary">Add Stock</button>
+          <span id="formMessage" class="muted"></span>
+        </div>
+      </form>
+    </section>
+
+    <section class="lists single">
+      <div class="list-card full">
+        <div class="list-card__header">
+          <h2 id="listTitle">A List (Trade soon)</h2>
+        </div>
+        <div id="singleListContainer" class="table-container"></div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Edit Modal -->
+  <div id="editModal" class="modal hidden" aria-hidden="true" role="dialog" aria-modal="true">
+    <div class="modal__backdrop" data-close-modal></div>
+    <div class="modal__dialog" role="document">
+      <div class="modal__header">
+        <h3>Edit Stock</h3>
+        <button class="modal__close" data-close-modal>&times;</button>
+      </div>
+      <form id="editStockForm" class="modal__body">
+        <input type="hidden" id="edit_id" />
+        <div class="form-field">
+          <label for="edit_symbol">Symbol</label>
+          <input id="edit_symbol" type="text" required />
+        </div>
+        <div class="form-field">
+          <label for="edit_initial_price">Initial Price</label>
+          <input id="edit_initial_price" type="number" step="0.01" required />
+        </div>
+        <div class="form-field">
+          <label for="edit_date_spotted">Date Spotted</label>
+          <input id="edit_date_spotted" type="date" />
+        </div>
+        <div class="form-field">
+          <label for="edit_date_bought">Date Bought</label>
+          <input id="edit_date_bought" type="date" />
+        </div>
+        <div class="form-field">
+          <label for="edit_list_type">List Type</label>
+          <select id="edit_list_type">
+            <option value="A">A</option>
+            <option value="B">B</option>
+            <option value="PA">Stored A</option>
+            <option value="PB">Stored B</option>
+          </select>
+        </div>
+        <div class="form-field form-field--full">
+          <label for="edit_reason">Reason</label>
+          <textarea id="edit_reason" rows="2"></textarea>
+        </div>
+        <div class="modal__footer">
+          <button type="button" class="btn" data-close-modal>Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='js/app.js') }}" defer></script>
+</body>
+</html>
