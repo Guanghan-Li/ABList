@@ -240,7 +240,6 @@
         throw new Error(err.error || 'Failed to update');
       }
       await loadStocks();
-      await updatePrices();
     } catch (err) {
       alert(err.message || 'Error updating');
     }

@@ -98,9 +98,8 @@ def create_stock():
     stocks.append(stock)
     _write_stocks(stocks)
 
-    # After creation, fetch current prices for all stocks and include for the new one
-    symbols = [s["symbol"] for s in stocks]
-    prices = get_current_prices(symbols)
+    # After creation, fetch the new stock's current price only
+    prices = get_current_prices([symbol])
     current_price = prices.get(symbol)
     pct = calculate_percent_change(initial_price, current_price)
 
