@@ -1,6 +1,7 @@
 (function () {
   const singleListContainer = document.getElementById('singleListContainer');
   const viewSelector = document.getElementById('viewSelector');
+  const weekSelector = document.getElementById('weekSelector');
   const listTitle = document.getElementById('listTitle');
   const addStockForm = document.getElementById('addStockForm');
   const formMessage = document.getElementById('formMessage');
@@ -154,7 +155,13 @@
   async function loadStocks() {
     singleListContainer.innerHTML = loader();
     try {
-      const res = await fetch('/api/stocks');
+      const selectedWeek = weekSelector?.value || '';
+      let url = '/api/stocks';
+      if (selectedWeek) {
+        const params = new URLSearchParams({ week: selectedWeek });
+        url = `${url}?${params.toString()}`;
+      }
+      const res = await fetch(url);
       if (!res.ok) throw new Error('Failed to load stocks');
       const data = await res.json();
       const selected = (viewSelector?.value || 'A').toUpperCase();
@@ -163,6 +170,36 @@
       singleListContainer.innerHTML = renderStockTable(list, selected);
     } catch (err) {
       singleListContainer.innerHTML = errorBox('Could not load list.');
+    }
+  }
+
+  async function loadWeeks() {
+    if (!weekSelector) return;
+    try {
+      const res = await fetch('/api/weeks');
+      if (!res.ok) throw new Error('Failed to load weeks');
+      const weeks = await res.json();
+      const previousValue = weekSelector.value;
+      while (weekSelector.options.length > 1) {
+        weekSelector.remove(1);
+      }
+      if (Array.isArray(weeks)) {
+        weeks.forEach((week) => {
+          if (!week || !week.week_end) return;
+          const option = document.createElement('option');
+          option.value = week.week_end;
+          option.textContent = week.week_label || `Week of ${week.week_end}`;
+          weekSelector.appendChild(option);
+        });
+      }
+      if (previousValue) {
+        const hasValue = Array.from(weekSelector.options).some((opt) => opt.value === previousValue);
+        weekSelector.value = hasValue ? previousValue : '';
+      } else {
+        weekSelector.value = '';
+      }
+    } catch (err) {
+      console.error(err);
     }
   }
 
@@ -278,7 +315,7 @@
         throw new Error(err.error || 'Failed to add stock');
       }
       await loadStocks();
-      await updatePrices();
+      await loadWeeks();
       addStockForm.reset();
       setTodayDate(document.getElementById('date_spotted'));
       if (dateBoughtInput) dateBoughtInput.value = '';
@@ -394,10 +431,15 @@
     await loadStocks();
     await updatePrices();
   });
+  weekSelector?.addEventListener('change', async () => {
+    await loadStocks();
+    await updatePrices();
+  });
 
   // Initial load
   (async function init() {
     await loadStocks();
+    await loadWeeks();
     await updatePrices();
     setInterval(updatePrices, 60000); // 60s auto-refresh
   })();

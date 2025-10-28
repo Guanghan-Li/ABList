@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import os
 import threading
-import time
 import uuid
+from datetime import datetime, timedelta, date
 from typing import Dict, List, Optional
 
 from flask import Flask, jsonify, render_template, request
@@ -30,23 +30,81 @@ def _ensure_file():
 
 def _read_stocks() -> List[Dict]:
     _ensure_file()
+    stocks: List[Dict] = []
     with _file_lock:
         try:
             with open(STOCKS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, list):
-                    return data
-                return []
+                    stocks = data
         except FileNotFoundError:
-            return []
+            stocks = []
         except json.JSONDecodeError:
-            return []
+            stocks = []
+
+    migrated = False
+    today = datetime.utcnow().date()
+    for stock in stocks:
+        if not isinstance(stock, dict):
+            continue
+        has_date_added = bool(stock.get("date_added"))
+        has_week_end = bool(stock.get("week_end"))
+        has_week_label = bool(stock.get("week_label"))
+        if has_date_added and has_week_end and has_week_label:
+            continue
+        source_date_str = stock.get("date_spotted") or None
+        base_date = _parse_date(source_date_str) if source_date_str else today
+        week_info = _calculate_week_info(base_date)
+        if not has_date_added:
+            stock["date_added"] = base_date.isoformat()
+        if not has_week_end:
+            stock["week_end"] = week_info["week_end"]
+        if not has_week_label:
+            stock["week_label"] = week_info["week_label"]
+        migrated = True
+
+    if migrated:
+        _write_stocks(stocks)
+
+    return stocks
 
 
 def _write_stocks(stocks: List[Dict]) -> None:
     with _file_lock:
         with open(STOCKS_FILE, "w", encoding="utf-8") as f:
             json.dump(stocks, f, indent=2)
+
+
+def _parse_date(date_str: Optional[str]) -> date:
+    if not date_str:
+        return datetime.utcnow().date()
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        return datetime.utcnow().date()
+
+
+def _get_week_end(date_obj: date) -> date:
+    monday = date_obj - timedelta(days=date_obj.weekday())
+    return monday + timedelta(days=6)
+
+
+def _format_week_label(sunday_date: date) -> str:
+    return f"Week of {sunday_date.strftime('%m/%d/%y')}"
+
+
+def _calculate_week_info(date_str: Optional[object] = None) -> Dict[str, str]:
+    if isinstance(date_str, datetime):
+        base_date = date_str.date()
+    elif isinstance(date_str, date):
+        base_date = date_str
+    else:
+        base_date = _parse_date(date_str if isinstance(date_str, str) else None)
+    week_end_date = _get_week_end(base_date)
+    return {
+        "week_end": week_end_date.isoformat(),
+        "week_label": _format_week_label(week_end_date),
+    }
 
 
 @app.route("/")
@@ -57,6 +115,9 @@ def index():
 @app.route("/api/stocks", methods=["GET"])
 def get_stocks():
     stocks = _read_stocks()
+    week_filter = (request.args.get("week") or "").strip()
+    if week_filter:
+        stocks = [s for s in stocks if (s.get("week_end") or "").strip() == week_filter]
     grouped = {lt: [] for lt in VALID_LIST_TYPES}
     for s in stocks:
         lt = (s.get("list_type") or "").strip().upper()
@@ -64,6 +125,26 @@ def get_stocks():
             lt = "B"
         grouped[lt].append(s)
     return jsonify(grouped)
+
+
+@app.route("/api/weeks", methods=["GET"])
+def get_weeks():
+    stocks = _read_stocks()
+    weeks: Dict[str, str] = {}
+    for stock in stocks:
+        if not isinstance(stock, dict):
+            continue
+        week_end = (stock.get("week_end") or "").strip()
+        if not week_end:
+            continue
+        week_label = stock.get("week_label")
+        if not week_label:
+            week_label = _calculate_week_info(week_end)["week_label"]
+        if week_end not in weeks:
+            weeks[week_end] = week_label
+    week_list = [{"week_end": key, "week_label": value} for key, value in weeks.items()]
+    week_list.sort(key=lambda item: item["week_end"], reverse=True)
+    return jsonify(week_list)
 
 
 @app.route("/api/stocks", methods=["POST"])
@@ -86,6 +167,8 @@ def create_stock():
         return jsonify({"error": "initial_price must be a number"}), 400
 
     stocks = _read_stocks()
+    today = datetime.utcnow().date()
+    week_info = _calculate_week_info(today)
     stock = {
         "id": str(uuid.uuid4()),
         "symbol": symbol,
@@ -93,6 +176,9 @@ def create_stock():
         "reason": reason,
         "date_spotted": date_spotted,
         "date_bought": date_bought,
+        "date_added": today.isoformat(),
+        "week_end": week_info["week_end"],
+        "week_label": week_info["week_label"],
         "list_type": list_type,
     }
     stocks.append(stock)
@@ -141,6 +227,14 @@ def update_stock(stock_id: str):
         if lt not in VALID_LIST_TYPES_SET:
             lt = "B"
         found["list_type"] = lt
+
+    reference_str = found.get("date_spotted") or found.get("date_added")
+    base_date = _parse_date(reference_str)
+    week_info = _calculate_week_info(base_date)
+    found["week_end"] = week_info["week_end"]
+    found["week_label"] = week_info["week_label"]
+    if not found.get("date_added"):
+        found["date_added"] = base_date.isoformat()
 
     _write_stocks(stocks)
     return jsonify(found)
