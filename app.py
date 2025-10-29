@@ -9,7 +9,13 @@ from typing import Dict, List, Optional
 
 from flask import Flask, jsonify, render_template, request
 
-from stock_api import calculate_percent_change, get_current_prices
+from stock_api import (
+    calculate_percent_change,
+    get_current_prices,
+    fetch_price_history,
+    fetch_company_overview,
+    fetch_latest_news,
+)
 
 app = Flask(__name__)
 
@@ -110,6 +116,14 @@ def _calculate_week_info(date_str: Optional[object] = None) -> Dict[str, str]:
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/stocks/<symbol>")
+def stock_detail(symbol: str):
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        sym = ""
+    return render_template("stock_detail.html", symbol=sym)
 
 
 @app.route("/api/stocks", methods=["GET"])
@@ -268,6 +282,46 @@ def get_prices():
             "percent_change": pct,
         })
     return jsonify(result)
+
+
+@app.route("/api/stocks/<symbol>/history", methods=["GET"])
+def api_stock_history(symbol: str):
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return jsonify({"error": "symbol is required"}), 400
+    timeframe = (request.args.get("tf") or "daily").strip().lower()
+    if timeframe not in ("daily", "weekly"):
+        timeframe = "daily"
+    history = fetch_price_history(sym, timeframe)
+    return jsonify({
+        "symbol": sym,
+        "timeframe": timeframe,
+        "history": history,
+    })
+
+
+@app.route("/api/stocks/<symbol>/overview", methods=["GET"])
+def api_stock_overview(symbol: str):
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return jsonify({"error": "symbol is required"}), 400
+    overview = fetch_company_overview(sym)
+    return jsonify(overview)
+
+
+@app.route("/api/stocks/<symbol>/news", methods=["GET"])
+def api_stock_news(symbol: str):
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return jsonify({"error": "symbol is required"}), 400
+    try:
+        limit = int(request.args.get("limit") or 10)
+    except Exception:
+        limit = 10
+    if limit <= 0:
+        limit = 10
+    news = fetch_latest_news(sym, limit)
+    return jsonify(news)
 
 
 if __name__ == "__main__":

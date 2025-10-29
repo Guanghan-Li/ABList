@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ symbol }} • Stock Detail</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+  <style>
+    .detail-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 16px; }
+    .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+    .control-group { display: flex; align-items: center; gap: 8px; }
+    .news-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+    .news-item a { color: #1f4fd1; text-decoration: none; }
+    .news-item a:hover { text-decoration: underline; }
+    .summary p { margin: 6px 0; }
+    .muted-small { color: #6b7280; font-size: 12px; }
+    .chart-container { position: relative; height: 380px; }
+    .chart-container.small { height: 160px; }
+    @media (max-width: 980px) { .detail-grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <h1>Details: <span id="titleSymbol">{{ symbol }}</span></h1>
+      <div class="controls">
+        <div class="control-group">
+          <label for="timeframe">Timeframe</label>
+          <select id="timeframe" class="select">
+            <option value="daily" selected>Daily</option>
+            <option value="weekly">Weekly</option>
+          </select>
+        </div>
+        <div class="control-group">
+          <label><input type="checkbox" id="toggleSMA" checked /> SMA</label>
+          <input type="number" id="smaPeriod" min="2" max="400" step="1" value="20" style="width:80px" />
+        </div>
+        <div class="control-group">
+          <label><input type="checkbox" id="toggleEMA" /> EMA</label>
+          <input type="number" id="emaPeriod" min="2" max="400" step="1" value="50" style="width:80px" />
+        </div>
+        <div class="control-group">
+          <label><input type="checkbox" id="toggleRSI" checked /> RSI</label>
+          <input type="number" id="rsiPeriod" min="2" max="200" step="1" value="14" style="width:80px" />
+        </div>
+      </div>
+    </header>
+
+    <section class="detail-grid">
+      <div>
+        <div class="card">
+          <h2>Price</h2>
+          <div class="chart-container"><canvas id="priceChart"></canvas></div>
+          <div class="muted-small" id="lastUpdatedNote">—</div>
+        </div>
+        <div class="card" id="rsiCard">
+          <h3>RSI</h3>
+          <div class="chart-container small"><canvas id="rsiChart"></canvas></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="card">
+          <h2>Overview</h2>
+          <div class="summary" id="overviewBox">
+            <div class="loader">Loading…</div>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Latest News</h2>
+          <ul class="news-list" id="newsList">
+            <li class="loader">Loading…</li>
+          </ul>
+        </div>
+        <div class="card">
+          <a class="btn" href="{{ url_for('index') }}">← Back to list</a>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Chart.js via CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+  <script>
+    window.__STOCK_SYMBOL__ = {{ symbol|tojson }};
+  </script>
+  <script src="{{ url_for('static', filename='js/stock_detail.js') }}" defer></script>
+</body>
+</html>
