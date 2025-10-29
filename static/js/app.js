@@ -109,7 +109,7 @@
       actionButtons.push(`<button class="btn btn-small btn-danger" data-action="delete" data-id="${id}">Delete</button>`);
       return `
         <tr data-id="${id}" data-symbol="${symbol}" data-list-type="${listType}" data-date-spotted="${date}" data-date-bought="${dateBought}">
-          <td class="col-symbol">${symbol}</td>
+          <td class="col-symbol"><a href="/stock/${encodeURIComponent(symbol)}" class="link-symbol">${symbol}</a></td>
           <td>${initial}</td>
           <td class="col-current">—</td>
           <td class="col-change">—</td>

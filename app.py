@@ -9,7 +9,13 @@ from typing import Dict, List, Optional
 
 from flask import Flask, jsonify, render_template, request
 
-from stock_api import calculate_percent_change, get_current_prices
+from stock_api import (
+    calculate_percent_change,
+    get_current_prices,
+    get_price_history,
+    get_recent_news,
+    get_company_profile,
+)
 
 app = Flask(__name__)
 
@@ -110,6 +116,15 @@ def _calculate_week_info(date_str: Optional[object] = None) -> Dict[str, str]:
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/stock/<symbol>")
+def stock_detail(symbol: str):
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        # Fallback to home if symbol missing
+        return render_template("index.html")
+    return render_template("stock_detail.html", symbol=sym)
 
 
 @app.route("/api/stocks", methods=["GET"])
@@ -268,6 +283,77 @@ def get_prices():
             "percent_change": pct,
         })
     return jsonify(result)
+
+
+# ---- Stock detail APIs ----
+
+@app.route("/api/stock/<symbol>/quote", methods=["GET"])
+def api_stock_quote(symbol: str):
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return jsonify({"error": "symbol required"}), 400
+    price = get_current_prices([sym]).get(sym)
+    return jsonify({"symbol": sym, "current_price": price})
+
+
+@app.route("/api/stock/<symbol>/history", methods=["GET"])
+def api_stock_history(symbol: str):
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return jsonify({"error": "symbol required"}), 400
+    interval = (request.args.get("interval") or "daily").lower()
+    years_str = (request.args.get("years") or "4").strip()
+    try:
+        years = max(1, min(10, int(years_str)))
+    except Exception:
+        years = 4
+    if interval not in ("daily", "weekly"):
+        interval = "daily"
+    data = get_price_history(sym, interval=interval, years=years)
+    return jsonify({"symbol": sym, "interval": interval, "years": years, "prices": data})
+
+
+@app.route("/api/stock/<symbol>/news", methods=["GET"])
+def api_stock_news(symbol: str):
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return jsonify({"error": "symbol required"}), 400
+    limit_str = (request.args.get("limit") or "8").strip()
+    try:
+        limit = max(1, min(20, int(limit_str)))
+    except Exception:
+        limit = 8
+    news = get_recent_news(sym, limit=limit)
+    return jsonify({"symbol": sym, "news": news})
+
+
+@app.route("/api/stock/<symbol>/profile", methods=["GET"])
+def api_stock_profile(symbol: str):
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return jsonify({"error": "symbol required"}), 400
+    profile = get_company_profile(sym)
+    return jsonify(profile)
+
+
+@app.route("/api/stock/<symbol>/local", methods=["GET"])
+def api_stock_local(symbol: str):
+    """Return locally stored metadata such as reason and initial price if present."""
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return jsonify({"error": "symbol required"}), 400
+    stocks = _read_stocks()
+    for s in stocks:
+        if (s.get("symbol") or "").strip().upper() == sym:
+            return jsonify({
+                "symbol": sym,
+                "initial_price": s.get("initial_price"),
+                "reason": s.get("reason"),
+                "date_spotted": s.get("date_spotted"),
+                "date_bought": s.get("date_bought"),
+                "list_type": s.get("list_type"),
+            })
+    return jsonify({"symbol": sym})
 
 
 if __name__ == "__main__":

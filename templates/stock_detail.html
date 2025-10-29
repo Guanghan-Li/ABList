@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stock Detail - {{ symbol }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+  <style>
+    .detail-header { display:flex; align-items:center; justify-content:space-between; gap:1rem; }
+    .detail-header h1 { margin: 0; font-size: 1.5rem; }
+    .breadcrumbs a { text-decoration:none; }
+    .controls { display:flex; flex-wrap:wrap; gap: 0.75rem 1rem; align-items:flex-end; margin: 0.5rem 0 1rem; }
+    .controls .control { display:flex; gap:0.5rem; align-items:center; }
+    .grid-2 { display:grid; grid-template-columns: 1fr; gap: 1rem; }
+    @media (min-width: 980px) { .grid-2 { grid-template-columns: 2fr 1fr; } }
+    .news-list { list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:0.5rem; }
+    .news-item { padding:0.5rem; border:1px solid var(--border-color, #ddd); border-radius:8px; }
+    .muted-small { color:#666; font-size: 0.85rem; }
+    .summary { white-space: pre-wrap; }
+    .chart-card canvas { width:100%; height: 360px; }
+    .split-charts { display:flex; flex-direction:column; gap: 1rem; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+</head>
+<body>
+  <div class="container">
+    <header class="header detail-header">
+      <div>
+        <div class="breadcrumbs"><a href="/">← Back to list</a></div>
+        <h1><span id="symbol">{{ symbol }}</span> <span id="currentPrice" class="muted">—</span></h1>
+      </div>
+      <div class="controls">
+        <div class="control">
+          <label for="tfSelect" class="muted">Timeframe</label>
+          <select id="tfSelect" class="select">
+            <option value="daily" selected>Daily (4y)</option>
+            <option value="weekly">Weekly (4y)</option>
+          </select>
+        </div>
+        <div class="control">
+          <input type="checkbox" id="smaToggle" checked />
+          <label for="smaToggle">SMA</label>
+          <input type="number" id="smaPeriod" class="input" min="2" max="400" step="1" value="20" style="width: 5rem" />
+        </div>
+        <div class="control">
+          <input type="checkbox" id="emaToggle" />
+          <label for="emaToggle">EMA</label>
+          <input type="number" id="emaPeriod" class="input" min="2" max="400" step="1" value="50" style="width: 5rem" />
+        </div>
+        <div class="control">
+          <input type="checkbox" id="rsiToggle" />
+          <label for="rsiToggle">RSI</label>
+          <input type="number" id="rsiPeriod" class="input" min="2" max="100" step="1" value="14" style="width: 5rem" />
+        </div>
+        <button class="btn btn-secondary" id="refreshBtn">Refresh</button>
+      </div>
+    </header>
+
+    <section class="card chart-card">
+      <div class="split-charts">
+        <canvas id="priceChart" aria-label="Price chart" role="img"></canvas>
+        <canvas id="rsiChart" aria-label="RSI chart" role="img" style="display:none"></canvas>
+      </div>
+    </section>
+
+    <div class="grid-2">
+      <section class="card">
+        <h2>Summary</h2>
+        <div id="summaryBox">
+          <div class="muted-small" id="nameLine">—</div>
+          <div class="muted-small" id="sectorLine">—</div>
+          <div class="summary" id="longSummary">—</div>
+          <div class="muted-small" id="siteLine"></div>
+        </div>
+      </section>
+      <section class="card">
+        <h2>Recent News</h2>
+        <ul id="newsList" class="news-list"></ul>
+      </section>
+    </div>
+
+    <section class="card">
+      <h2>Notes</h2>
+      <div id="notesBox" class="summary">—</div>
+    </section>
+  </div>
+
+  <script>
+    window.STOCK_SYMBOL = '{{ symbol }}';
+  </script>
+  <script src="{{ url_for('static', filename='js/stock_detail.js') }}" defer></script>
+</body>
+</html>
