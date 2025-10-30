@@ -93,6 +93,8 @@
     const rows = stocks.map((s) => {
       const id = s.id;
       const symbol = s.symbol || '';
+      const detailUrl = symbol ? `/stocks/${encodeURIComponent(symbol)}` : '#';
+      const symbolCell = symbol ? `<a class="link-symbol" href="${detailUrl}">${escapeHtml(symbol)}</a>` : '';
       const initial = s.initial_price != null ? Number(s.initial_price).toFixed(2) : '—';
       const reason = s.reason || '';
       const date = s.date_spotted || '';
@@ -109,7 +111,7 @@
       actionButtons.push(`<button class="btn btn-small btn-danger" data-action="delete" data-id="${id}">Delete</button>`);
       return `
         <tr data-id="${id}" data-symbol="${symbol}" data-list-type="${listType}" data-date-spotted="${date}" data-date-bought="${dateBought}">
-          <td class="col-symbol">${symbol}</td>
+          <td class="col-symbol">${symbolCell}</td>
           <td>${initial}</td>
           <td class="col-current">—</td>
           <td class="col-change">—</td>

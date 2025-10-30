@@ -1,9 +1,310 @@
 from __future__ import annotations
 
-from typing import Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 import time
+from datetime import datetime
+
+import numpy as np
+import pandas as pd
 import yfinance as yf
+
+
+ALLOWED_INTERVALS = {"1d", "1wk"}
+DEFAULT_INTERVAL = "1d"
+MAX_NEWS_ITEMS = 10
+
+
+def _normalize_symbol(symbol: str) -> str:
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        raise ValueError("symbol is required")
+    return sym
+
+
+def _validate_interval(interval: Optional[str]) -> str:
+    iv = (interval or DEFAULT_INTERVAL).strip().lower()
+    if iv not in ALLOWED_INTERVALS:
+        raise ValueError("interval must be 1d or 1wk")
+    return iv
+
+
+def _history_period_for(interval: str) -> str:
+    # Weekly history benefits from a slightly longer pull to ensure 4y coverage
+    return "5y" if interval == "1wk" else "4y"
+
+
+def _history_to_records(history: pd.DataFrame) -> List[Dict[str, Optional[float]]]:
+    if history.empty:
+        return []
+    data = history.reset_index()
+    records: List[Dict[str, Optional[float]]] = []
+    for _, row in data.iterrows():
+        # yfinance returns Timestamp for the index. Convert to ISO date string.
+        raw_date = row.get("Date")
+        if isinstance(raw_date, (pd.Timestamp, datetime)):
+            date_str = raw_date.tz_localize(None).strftime("%Y-%m-%d")
+        else:
+            try:
+                date_str = pd.to_datetime(raw_date).strftime("%Y-%m-%d")
+            except Exception:
+                date_str = None
+        records.append({
+            "date": date_str,
+            "open": _safe_float(row.get("Open")),
+            "high": _safe_float(row.get("High")),
+            "low": _safe_float(row.get("Low")),
+            "close": _safe_float(row.get("Close")),
+            "adj_close": _safe_float(row.get("Adj Close")),
+            "volume": _safe_float(row.get("Volume")),
+        })
+    return records
+
+
+def _safe_float(value: Optional[float]) -> Optional[float]:
+    try:
+        if value is None or (isinstance(value, float) and np.isnan(value)):
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _safe_str(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    try:
+        text = str(value).strip()
+    except Exception:
+        return None
+    return text or None
+
+
+def _timestamp_to_iso(value: Any) -> Optional[str]:
+    if value in (None, "", 0):
+        return None
+    try:
+        if isinstance(value, (np.integer, int)):
+            timestamp = int(value)
+        elif isinstance(value, (np.floating, float)):
+            timestamp = float(value)
+        else:
+            timestamp = float(str(value))
+        if timestamp <= 0:
+            return None
+        dt = datetime.fromtimestamp(timestamp)
+        return dt.isoformat()
+    except Exception:
+        return None
+
+
+def _extract_thumbnail_url(article: Dict[str, Any]) -> Optional[str]:
+    thumbnail = article.get("thumbnail")
+    if isinstance(thumbnail, dict):
+        resolutions = thumbnail.get("resolutions")
+        if isinstance(resolutions, list):
+            for entry in resolutions:
+                if isinstance(entry, dict):
+                    url = entry.get("url")
+                    if url:
+                        return str(url)
+    elif isinstance(thumbnail, list):
+        for entry in thumbnail:
+            if isinstance(entry, dict):
+                url = entry.get("url")
+                if url:
+                    return str(url)
+    return None
+
+
+def _download_history(symbol: str, interval: str) -> pd.DataFrame:
+    ticker = yf.Ticker(symbol)
+    period = _history_period_for(interval)
+    history = ticker.history(period=period, interval=interval, auto_adjust=False)
+    # Ensure numeric columns are floats
+    return history.astype(float, errors="ignore")
+
+
+def fetch_price_history(symbol: str, interval: Optional[str] = None) -> Dict:
+    sym = _normalize_symbol(symbol)
+    iv = _validate_interval(interval)
+    try:
+        history = _download_history(sym, iv)
+    except Exception:
+        history = pd.DataFrame()
+    return {
+        "symbol": sym,
+        "interval": iv,
+        "points": _history_to_records(history),
+    }
+
+
+def _series_from_history(history: pd.DataFrame) -> pd.Series:
+    if history.empty or "Close" not in history.columns:
+        return pd.Series(dtype=float)
+    series = history["Close"].astype(float, errors="ignore")
+    return series
+
+
+def compute_sma(symbol: str, interval: str, windows: Iterable[int]) -> Dict:
+    sym = _normalize_symbol(symbol)
+    iv = _validate_interval(interval)
+    history = pd.DataFrame()
+    try:
+        history = _download_history(sym, iv)
+    except Exception:
+        history = pd.DataFrame()
+    close_series = _series_from_history(history)
+    records = []
+    if close_series.empty:
+        return {"symbol": sym, "interval": iv, "indicators": records}
+    for window in windows:
+        if window <= 0:
+            continue
+        sma_series = close_series.rolling(window=window, min_periods=1).mean()
+        records.append({
+            "type": "sma",
+            "window": window,
+            "values": _series_to_list(sma_series, history)
+        })
+    return {"symbol": sym, "interval": iv, "indicators": records}
+
+
+def compute_ema(symbol: str, interval: str, windows: Iterable[int]) -> Dict:
+    sym = _normalize_symbol(symbol)
+    iv = _validate_interval(interval)
+    history = pd.DataFrame()
+    try:
+        history = _download_history(sym, iv)
+    except Exception:
+        history = pd.DataFrame()
+    close_series = _series_from_history(history)
+    records = []
+    if close_series.empty:
+        return {"symbol": sym, "interval": iv, "indicators": records}
+    for window in windows:
+        if window <= 0:
+            continue
+        ema_series = close_series.ewm(span=window, adjust=False).mean()
+        records.append({
+            "type": "ema",
+            "window": window,
+            "values": _series_to_list(ema_series, history)
+        })
+    return {"symbol": sym, "interval": iv, "indicators": records}
+
+
+def compute_rsi(symbol: str, interval: str, period: int) -> Dict:
+    sym = _normalize_symbol(symbol)
+    iv = _validate_interval(interval)
+    if period <= 0:
+        raise ValueError("period must be positive")
+    history = pd.DataFrame()
+    try:
+        history = _download_history(sym, iv)
+    except Exception:
+        history = pd.DataFrame()
+    close_series = _series_from_history(history)
+    if close_series.empty:
+        values: List[Optional[float]] = []
+    else:
+        delta = close_series.diff()
+        up = delta.clip(lower=0)
+        down = -delta.clip(upper=0)
+        roll_up = up.ewm(alpha=1 / period, adjust=False).mean()
+        roll_down = down.ewm(alpha=1 / period, adjust=False).mean()
+        rs = roll_up / roll_down.replace({0: np.nan})
+        rsi_series = 100 - (100 / (1 + rs))
+        values = _series_to_list(rsi_series, history)
+    return {
+        "symbol": sym,
+        "interval": iv,
+        "period": period,
+        "values": values,
+    }
+
+
+def _series_to_list(series: pd.Series, history: pd.DataFrame) -> List[Dict[str, Optional[float]]]:
+    if series.empty:
+        return []
+    series = series.reset_index(drop=True)
+    history = history.reset_index()
+    values: List[Dict[str, Optional[float]]] = []
+    for idx, value in enumerate(series):
+        raw_date = history.loc[idx, "Date"] if idx < len(history) else None
+        if isinstance(raw_date, (pd.Timestamp, datetime)):
+            date_str = raw_date.tz_localize(None).strftime("%Y-%m-%d")
+        else:
+            try:
+                date_str = pd.to_datetime(raw_date).strftime("%Y-%m-%d")
+            except Exception:
+                date_str = None
+        values.append({
+            "date": date_str,
+            "value": None if value is None or (isinstance(value, float) and np.isnan(value)) else float(value),
+        })
+    return values
+
+
+def fetch_overview(symbol: str) -> Dict:
+    sym = _normalize_symbol(symbol)
+    info: Dict[str, Optional[str]] = {"symbol": sym}
+    try:
+        ticker = yf.Ticker(sym)
+        if hasattr(ticker, "fast_info"):
+            fi = ticker.fast_info
+            info.update({
+                "last_price": _safe_float(getattr(fi, "last_price", None)),
+                "currency": getattr(fi, "currency", None),
+                "market_cap": _safe_float(getattr(fi, "market_cap", None)),
+            })
+        try:
+            raw = ticker.info
+            if isinstance(raw, dict):
+                for key in ("longName", "shortName", "sector", "industry", "longBusinessSummary", "website"):
+                    if key in raw and raw[key]:
+                        info[key] = raw[key]
+        except Exception:
+            pass
+    except Exception:
+        pass
+    return info
+
+
+def fetch_news(symbol: str, limit: int = MAX_NEWS_ITEMS) -> List[Dict]:
+    sym = _normalize_symbol(symbol)
+    items: List[Dict] = []
+    try:
+        ticker = yf.Ticker(sym)
+        raw_news: List[Dict[str, Any]] = []
+        try:
+            raw_news = ticker.news or []
+        except Exception:
+            raw_news = []
+        if not raw_news:
+            try:
+                fetched = ticker.get_news()
+                if isinstance(fetched, list):
+                    raw_news = fetched
+            except Exception:
+                raw_news = []
+        for article in raw_news[:limit]:
+            if not isinstance(article, dict):
+                continue
+            sanitized = {
+                "title": _safe_str(article.get("title")),
+                "link": _safe_str(article.get("link")),
+                "publisher": _safe_str(article.get("publisher")),
+                "type": _safe_str(article.get("type")),
+                "thumbnail": _extract_thumbnail_url(article),
+                "published_at": _timestamp_to_iso(article.get("providerPublishTime")),
+            }
+            if not (sanitized["title"] or sanitized["link"]):
+                continue
+            items.append(sanitized)
+    except Exception:
+        return items
+    return items
 
 
 def get_current_prices(symbols: Iterable[str]) -> Dict[str, Optional[float]]:

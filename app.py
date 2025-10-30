@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import threading
@@ -9,7 +10,7 @@ from typing import Dict, List, Optional
 
 from flask import Flask, jsonify, render_template, request
 
-from stock_api import calculate_percent_change, get_current_prices
+from flask import abort
 
 app = Flask(__name__)
 
@@ -18,6 +19,71 @@ STOCKS_FILE = os.path.join(BASE_DIR, "stocks.json")
 _file_lock = threading.Lock()
 VALID_LIST_TYPES = ("A", "B", "PA", "PB")
 VALID_LIST_TYPES_SET = set(VALID_LIST_TYPES)
+
+
+def _stock_api_module():
+    # Lazy import to avoid pulling heavy dependencies (pandas, numpy) during tests
+    return importlib.import_module("stock_api")
+
+
+def fetch_price_history(*args, **kwargs):
+    return _stock_api_module().fetch_price_history(*args, **kwargs)
+
+
+def compute_sma(*args, **kwargs):
+    return _stock_api_module().compute_sma(*args, **kwargs)
+
+
+def compute_ema(*args, **kwargs):
+    return _stock_api_module().compute_ema(*args, **kwargs)
+
+
+def compute_rsi(*args, **kwargs):
+    return _stock_api_module().compute_rsi(*args, **kwargs)
+
+
+def fetch_news(*args, **kwargs):
+    return _stock_api_module().fetch_news(*args, **kwargs)
+
+
+def fetch_overview(*args, **kwargs):
+    return _stock_api_module().fetch_overview(*args, **kwargs)
+
+
+def get_current_prices(*args, **kwargs):
+    return _stock_api_module().get_current_prices(*args, **kwargs)
+
+
+def calculate_percent_change(*args, **kwargs):
+    return _stock_api_module().calculate_percent_change(*args, **kwargs)
+
+
+def _normalize_symbol(symbol: str) -> str:
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        raise ValueError("symbol is required")
+    return sym
+
+
+def _parse_windows_param(raw: Optional[str]) -> List[int]:
+    if not raw:
+        return []
+    windows: List[int] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            value = int(part)
+        except ValueError:
+            continue
+        if value > 0:
+            windows.append(value)
+    return windows
+
+
+def _json_error(message: str, status: int = 400):
+    return jsonify({"error": message}), status
 
 
 def _ensure_file():
@@ -110,6 +176,15 @@ def _calculate_week_info(date_str: Optional[object] = None) -> Dict[str, str]:
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/stocks/<symbol>")
+def stock_detail(symbol: str):
+    try:
+        sym = _normalize_symbol(symbol)
+    except ValueError:
+        abort(404)
+    return render_template("stock_detail.html", symbol=sym)
 
 
 @app.route("/api/stocks", methods=["GET"])
@@ -268,6 +343,81 @@ def get_prices():
             "percent_change": pct,
         })
     return jsonify(result)
+
+
+@app.route("/api/stocks/<symbol>/overview", methods=["GET"])
+def get_stock_overview(symbol: str):
+    try:
+        sym = _normalize_symbol(symbol)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    data = fetch_overview(sym)
+    return jsonify(data)
+
+
+@app.route("/api/stocks/<symbol>/history", methods=["GET"])
+def get_stock_history(symbol: str):
+    interval = request.args.get("interval") or "1d"
+    try:
+        sym = _normalize_symbol(symbol)
+        data = fetch_price_history(sym, interval)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    return jsonify(data)
+
+
+@app.route("/api/stocks/<symbol>/indicators", methods=["GET"])
+def get_stock_indicators(symbol: str):
+    indicator_type = (request.args.get("type") or "sma").strip().lower()
+    interval = request.args.get("interval") or "1d"
+    windows_param = request.args.get("windows") or ""
+    windows = _parse_windows_param(windows_param)
+    if not windows:
+        return _json_error("windows parameter must include at least one positive integer", 400)
+    try:
+        sym = _normalize_symbol(symbol)
+        if indicator_type == "sma":
+            data = compute_sma(sym, interval, windows)
+        elif indicator_type == "ema":
+            data = compute_ema(sym, interval, windows)
+        else:
+            return _json_error("type must be 'sma' or 'ema'", 400)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    return jsonify(data)
+
+
+@app.route("/api/stocks/<symbol>/rsi", methods=["GET"])
+def get_stock_rsi(symbol: str):
+    interval = request.args.get("interval") or "1d"
+    period_raw = request.args.get("period") or "14"
+    try:
+        period = int(period_raw)
+    except ValueError:
+        return _json_error("period must be an integer", 400)
+    try:
+        sym = _normalize_symbol(symbol)
+        data = compute_rsi(sym, interval, period)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    return jsonify(data)
+
+
+@app.route("/api/stocks/<symbol>/news", methods=["GET"])
+def get_stock_news(symbol: str):
+    limit_raw = request.args.get("limit")
+    limit = None
+    if limit_raw is not None:
+        try:
+            limit = max(1, int(limit_raw))
+        except ValueError:
+            return _json_error("limit must be an integer", 400)
+    try:
+        sym = _normalize_symbol(symbol)
+        articles = fetch_news(sym, limit=limit or 10)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    return jsonify({"symbol": sym, "articles": articles})
 
 
 if __name__ == "__main__":

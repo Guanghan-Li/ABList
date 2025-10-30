@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{{ symbol }} | Stock Insight</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+<body>
+  <div class="detail-container">
+    <header class="detail-header">
+      <div class="detail-header__left">
+        <a class="back-link" href="{{ url_for('index') }}">&larr; Back to list</a>
+        <h1 class="detail-title">{{ symbol }}</h1>
+        <p id="companyName" class="muted">Loading company name…</p>
+      </div>
+      <div class="price-card">
+        <span id="currentPrice" class="price-card__value">—</span>
+        <span id="priceCurrency" class="price-card__meta muted"></span>
+      </div>
+    </header>
+
+    <section class="detail-card">
+      <div class="chart-header">
+        <div class="chart-header__group">
+          <label for="intervalSelect">Price interval</label>
+          <select id="intervalSelect" class="select">
+            <option value="1d" selected>Daily</option>
+            <option value="1wk">Weekly</option>
+          </select>
+        </div>
+        <div class="chart-header__group">
+          <span class="muted" id="lastUpdatedAt">Updated: —</span>
+        </div>
+      </div>
+      <div class="chart-wrapper">
+        <canvas id="priceChart"></canvas>
+      </div>
+    </section>
+
+    <section class="detail-card">
+      <h2 class="section-title">Trend Overlays</h2>
+      <form id="overlayForm" class="overlay-form">
+        <div class="form-field">
+          <label for="overlayType">Indicator</label>
+          <select id="overlayType">
+            <option value="sma">Simple Moving Average</option>
+            <option value="ema">Exponential Moving Average</option>
+          </select>
+        </div>
+        <div class="form-field">
+          <label for="overlayWindow">Period</label>
+          <input id="overlayWindow" type="number" min="1" value="20" />
+        </div>
+        <div class="form-field">
+          <label for="overlayColor">Color</label>
+          <input id="overlayColor" type="color" value="#2563eb" />
+        </div>
+        <div class="form-field overlay-actions">
+          <button type="submit" class="btn btn-primary">Add Overlay</button>
+        </div>
+      </form>
+      <ul id="overlayList" class="overlay-list"></ul>
+    </section>
+
+    <section class="detail-card">
+      <div class="section-title-row">
+        <h2 class="section-title">Relative Strength Index</h2>
+        <div class="rsi-controls">
+          <label class="rsi-toggle">
+            <input type="checkbox" id="rsiToggle" />
+            Show RSI
+          </label>
+          <label for="rsiPeriod">Period</label>
+          <input id="rsiPeriod" type="number" min="2" value="14" />
+          <button id="rsiApply" class="btn">Update</button>
+        </div>
+      </div>
+      <div class="rsi-chart-wrapper hidden" id="rsiChartWrapper">
+        <canvas id="rsiChart" height="200"></canvas>
+      </div>
+    </section>
+
+    <section class="detail-grid">
+      <article class="detail-card summary-card">
+        <h2 class="section-title">Company Snapshot</h2>
+        <dl class="summary-list">
+          <div>
+            <dt>Company</dt>
+            <dd id="summaryName">—</dd>
+          </div>
+          <div>
+            <dt>Sector</dt>
+            <dd id="summarySector">—</dd>
+          </div>
+          <div>
+            <dt>Industry</dt>
+            <dd id="summaryIndustry">—</dd>
+          </div>
+          <div>
+            <dt>Market Cap</dt>
+            <dd id="summaryMarketCap">—</dd>
+          </div>
+          <div>
+            <dt>Website</dt>
+            <dd id="summaryWebsite">—</dd>
+          </div>
+        </dl>
+        <p id="summaryDescription" class="summary-description muted">
+          Loading summary…
+        </p>
+      </article>
+
+      <article class="detail-card news-card">
+        <h2 class="section-title">Latest News</h2>
+        <ul id="newsList" class="news-list"></ul>
+      </article>
+    </section>
+  </div>
+
+  <script>window.STOCK_SYMBOL = "{{ symbol }}";</script>
+  <script src="https://cdn.jsdelivr.net/npm/luxon@3.4.4/build/global/luxon.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.1/dist/chartjs-adapter-luxon.umd.min.js" defer></script>
+  <script src="{{ url_for('static', filename='js/detail.js') }}" defer></script>
+</body>
+</html>
