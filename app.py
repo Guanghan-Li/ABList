@@ -21,6 +21,13 @@ VALID_LIST_TYPES = ("A", "B", "PA", "PB")
 VALID_LIST_TYPES_SET = set(VALID_LIST_TYPES)
 
 
+def _normalize_list_type(list_type: Optional[str]) -> str:
+    lt = (list_type or "").strip().upper()
+    if lt not in VALID_LIST_TYPES_SET:
+        return "B"
+    return lt
+
+
 def _stock_api_module():
     # Lazy import to avoid pulling heavy dependencies (pandas, numpy) during tests
     return importlib.import_module("stock_api")
@@ -202,6 +209,34 @@ def get_stocks():
     return jsonify(grouped)
 
 
+@app.route("/api/stocks/search", methods=["GET"])
+def search_stocks():
+    raw_query = request.args.get("q")
+    query = (raw_query or "").strip().upper()
+    if not query:
+        return jsonify({"results": []})
+    if len(query) > 32:
+        return _json_error("query must be 32 characters or fewer", 400)
+
+    stocks = _read_stocks()
+    matches: List[Dict[str, Optional[str]]] = []
+    for stock in stocks:
+        if not isinstance(stock, dict):
+            continue
+        symbol = (stock.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        if symbol.startswith(query):
+            matches.append({
+                "id": stock.get("id"),
+                "symbol": symbol,
+                "list_type": _normalize_list_type(stock.get("list_type")),
+            })
+
+    matches.sort(key=lambda item: item["symbol"])
+    return jsonify({"results": matches[:10]})
+
+
 @app.route("/api/weeks", methods=["GET"])
 def get_weeks():
     stocks = _read_stocks()
@@ -353,6 +388,57 @@ def get_stock_overview(symbol: str):
         return _json_error(str(exc), 400)
     data = fetch_overview(sym)
     return jsonify(data)
+
+
+@app.route("/api/stocks/<symbol>/snapshot", methods=["GET"])
+def get_stock_snapshot(symbol: str):
+    try:
+        sym = _normalize_symbol(symbol)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+
+    stocks = _read_stocks()
+    normalized = [
+        s for s in stocks
+        if isinstance(s, dict) and (s.get("symbol") or "").strip().upper() == sym
+    ]
+    if not normalized:
+        return _json_error("stock not found", 404)
+
+    def _sort_key(stock: Dict) -> date:
+        reference = stock.get("date_added") or stock.get("date_spotted")
+        return _parse_date(reference)
+
+    latest = max(normalized, key=_sort_key)
+
+    initial_price_raw = latest.get("initial_price")
+    try:
+        initial_price = float(initial_price_raw)
+    except (TypeError, ValueError):
+        initial_price = None
+
+    current_price = None
+    percent_change = None
+    if initial_price is not None:
+        try:
+            prices = get_current_prices([sym]) or {}
+            current_price = prices.get(sym)
+            percent_change = calculate_percent_change(initial_price, current_price)
+        except Exception:
+            current_price = None
+            percent_change = None
+
+    payload = {
+        "symbol": sym,
+        "id": latest.get("id"),
+        "list_type": latest.get("list_type"),
+        "initial_price": initial_price,
+        "date_spotted": latest.get("date_spotted"),
+        "date_added": latest.get("date_added"),
+        "current_price": current_price,
+        "percent_change": percent_change,
+    }
+    return jsonify(payload)
 
 
 @app.route("/api/stocks/<symbol>/history", methods=["GET"])

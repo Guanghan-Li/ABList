@@ -8,6 +8,12 @@
   const refreshBtn = document.getElementById('refreshBtn');
   const lastUpdated = document.getElementById('lastUpdated');
 
+  const searchInput = document.getElementById('stockSearch');
+  const searchResultsList = document.getElementById('searchResults');
+  const searchWrapper = document.getElementById('searchWrapper');
+  let searchTimer = null;
+  let searchController = null;
+
   const editModal = document.getElementById('editModal');
   const editForm = document.getElementById('editStockForm');
 
@@ -152,6 +158,261 @@
     const div = document.createElement('div');
     div.innerText = str || '';
     return div.innerHTML;
+  }
+
+
+  function clearSearchTimer() {
+    if (searchTimer) {
+      clearTimeout(searchTimer);
+      searchTimer = null;
+    }
+  }
+
+
+  function clearSearchResults() {
+    clearSearchTimer();
+    if (searchController) {
+      searchController.abort();
+      searchController = null;
+    }
+    if (!searchResultsList) return;
+    searchResultsList.innerHTML = '';
+    searchResultsList.classList.add('hidden');
+    if (searchInput) {
+      searchInput.setAttribute('aria-expanded', 'false');
+    }
+  }
+
+
+  function renderSearchLoading() {
+    if (!searchResultsList || !searchInput) return;
+    searchResultsList.innerHTML = '';
+    const li = document.createElement('li');
+    li.className = 'search-empty';
+    li.textContent = 'Searching...';
+    searchResultsList.appendChild(li);
+    searchResultsList.classList.remove('hidden');
+    searchInput.setAttribute('aria-expanded', 'true');
+  }
+
+
+  function renderSearchResults(items) {
+    if (!searchResultsList || !searchInput) return;
+    searchResultsList.innerHTML = '';
+    if (!Array.isArray(items) || items.length === 0) {
+      const li = document.createElement('li');
+      li.className = 'search-empty';
+      li.textContent = 'No matches found.';
+      searchResultsList.appendChild(li);
+      searchResultsList.classList.remove('hidden');
+      searchInput.setAttribute('aria-expanded', 'true');
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    items.forEach((item, index) => {
+      if (!item || !item.symbol) return;
+      const li = document.createElement('li');
+      li.className = 'search-result-item';
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'search-result-button';
+      button.dataset.symbol = item.symbol;
+      button.dataset.listType = item.list_type || '';
+      button.setAttribute('role', 'option');
+      button.setAttribute('aria-selected', 'false');
+      button.id = `search-option-${index}`;
+      const label = listTitleFor(item.list_type);
+      button.innerHTML = `
+        <span class="search-symbol">${escapeHtml(item.symbol)}</span>
+        <span class="search-meta">${escapeHtml(label)}</span>
+      `;
+      li.appendChild(button);
+      fragment.appendChild(li);
+    });
+    searchResultsList.appendChild(fragment);
+    searchResultsList.classList.remove('hidden');
+    searchInput.setAttribute('aria-expanded', 'true');
+  }
+
+
+  function renderSearchError() {
+    if (!searchResultsList || !searchInput) return;
+    searchResultsList.innerHTML = '';
+    const li = document.createElement('li');
+    li.className = 'search-error';
+    li.textContent = 'Could not load suggestions.';
+    searchResultsList.appendChild(li);
+    searchResultsList.classList.remove('hidden');
+    searchInput.setAttribute('aria-expanded', 'true');
+  }
+
+
+  async function fetchSearchResults(query) {
+    if (!searchResultsList || !searchInput) return;
+    if (!query) {
+      clearSearchResults();
+      return;
+    }
+    if (searchController) {
+      searchController.abort();
+    }
+    searchController = new AbortController();
+    try {
+      const params = new URLSearchParams({ q: query });
+      const res = await fetch(`/api/stocks/search?${params.toString()}`, { signal: searchController.signal });
+      if (!res.ok) throw new Error('Search failed');
+      const data = await res.json();
+      const currentInput = (searchInput.value || '').trim().toUpperCase();
+      if (currentInput !== query) {
+        return;
+      }
+      const items = Array.isArray(data?.results) ? data.results : [];
+      renderSearchResults(items);
+    } catch (err) {
+      if (err.name === 'AbortError') return;
+      renderSearchError();
+    } finally {
+      searchController = null;
+    }
+  }
+
+
+  function handleSearchInput(event) {
+    if (!searchInput) return;
+    const value = (event.target.value || '').trim();
+    if (!value) {
+      clearSearchResults();
+      return;
+    }
+    renderSearchLoading();
+    clearSearchTimer();
+    const normalized = value.toUpperCase();
+    searchTimer = setTimeout(() => fetchSearchResults(normalized), 200);
+  }
+
+
+  function moveSearchFocus(direction) {
+    if (!searchResultsList) return;
+    const buttons = Array.from(searchResultsList.querySelectorAll('.search-result-button'));
+    if (!buttons.length) return;
+    const activeIndex = buttons.indexOf(document.activeElement);
+    if (direction === 'down') {
+      const nextIndex = activeIndex === -1 ? 0 : Math.min(activeIndex + 1, buttons.length - 1);
+      buttons.forEach((btn, index) => {
+        const isActive = index === nextIndex;
+        btn.classList.toggle('search-result-button--active', isActive);
+        btn.setAttribute('aria-selected', String(isActive));
+        if (isActive) {
+          btn.focus();
+          btn.scrollIntoView({ block: 'nearest' });
+        }
+      });
+      return;
+    }
+
+    if (activeIndex <= 0) {
+      buttons.forEach((btn) => {
+        btn.classList.remove('search-result-button--active');
+        btn.setAttribute('aria-selected', 'false');
+      });
+      if (searchInput) {
+        searchInput.focus();
+        const length = searchInput.value.length;
+        searchInput.setSelectionRange(length, length);
+      }
+      return;
+    }
+
+    const nextIndex = activeIndex - 1;
+    buttons.forEach((btn, index) => {
+      const isActive = index === nextIndex;
+      btn.classList.toggle('search-result-button--active', isActive);
+      btn.setAttribute('aria-selected', String(isActive));
+      if (isActive) {
+        btn.focus();
+        btn.scrollIntoView({ block: 'nearest' });
+      }
+    });
+  }
+
+
+  function handleSearchKeydown(event) {
+    if (!searchInput) return;
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      if (searchResultsList && searchResultsList.classList.contains('hidden') && searchInput.value.trim()) {
+        renderSearchLoading();
+        clearSearchTimer();
+        searchTimer = setTimeout(() => fetchSearchResults(searchInput.value.trim().toUpperCase()), 0);
+      }
+      moveSearchFocus('down');
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      moveSearchFocus('up');
+    } else if (event.key === 'Enter') {
+      if (!searchResultsList) return;
+      const firstButton = searchResultsList.querySelector('.search-result-button');
+      const typed = (searchInput.value || '').trim().toUpperCase();
+      if (firstButton) {
+        event.preventDefault();
+        goToSymbol(firstButton.getAttribute('data-symbol'));
+      } else if (typed) {
+        event.preventDefault();
+        goToSymbol(typed);
+      }
+    } else if (event.key === 'Escape') {
+      clearSearchResults();
+    }
+  }
+
+
+  function handleSearchClick(event) {
+    const button = event.target.closest('.search-result-button');
+    if (!button) return;
+    event.preventDefault();
+    goToSymbol(button.getAttribute('data-symbol'));
+  }
+
+
+  function handleSearchListKeydown(event) {
+    const button = event.target.closest('.search-result-button');
+    if (!button) return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      goToSymbol(button.getAttribute('data-symbol'));
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      clearSearchResults();
+      if (searchInput) searchInput.focus();
+    } else if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      moveSearchFocus('down');
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      moveSearchFocus('up');
+    }
+  }
+
+
+  function syncActiveSearchItem(event) {
+    if (!searchResultsList) return;
+    const button = event.target.closest('.search-result-button');
+    if (!button) return;
+    const buttons = searchResultsList.querySelectorAll('.search-result-button');
+    buttons.forEach((btn) => {
+      const isActive = btn === button;
+      btn.classList.toggle('search-result-button--active', isActive);
+      btn.setAttribute('aria-selected', String(isActive));
+    });
+  }
+
+
+  function goToSymbol(symbol) {
+    if (!symbol) return;
+    clearSearchResults();
+    const target = `/stocks/${encodeURIComponent(symbol.toUpperCase())}`;
+    window.location.href = target;
   }
 
   async function loadStocks() {
@@ -427,6 +688,32 @@
       submitBtn.textContent = 'Save Changes';
     }
   });
+
+  if (searchInput) {
+    searchInput.addEventListener('input', handleSearchInput);
+    searchInput.addEventListener('keydown', handleSearchKeydown);
+    searchInput.addEventListener('focus', () => {
+      if (!searchResultsList) return;
+      if ((searchInput.value || '').trim() && searchResultsList.children.length > 0) {
+        searchResultsList.classList.remove('hidden');
+        searchInput.setAttribute('aria-expanded', 'true');
+      }
+    });
+  }
+
+  if (searchResultsList) {
+    searchResultsList.addEventListener('click', handleSearchClick);
+    searchResultsList.addEventListener('keydown', handleSearchListKeydown);
+    searchResultsList.addEventListener('focusin', syncActiveSearchItem);
+  }
+
+  if (searchWrapper) {
+    document.addEventListener('click', (event) => {
+      if (!searchWrapper.contains(event.target)) {
+        clearSearchResults();
+      }
+    });
+  }
 
   refreshBtn.addEventListener('click', () => updatePrices());
   viewSelector?.addEventListener('change', async () => {

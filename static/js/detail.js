@@ -28,6 +28,12 @@
   const rsiWrapper = document.getElementById('rsiChartWrapper');
   const rsiCanvas = document.getElementById('rsiChart');
   const newsListEl = document.getElementById('newsList');
+  const metricDateSpottedEl = document.getElementById('metricDateSpotted');
+  const metricPriceSpottedEl = document.getElementById('metricPriceSpotted');
+  const metricPriceChangeEl = document.getElementById('metricPriceChange');
+  const zoomInBtn = document.getElementById('zoomInBtn');
+  const zoomOutBtn = document.getElementById('zoomOutBtn');
+  const resetZoomBtn = document.getElementById('resetZoomBtn');
 
   let priceChart;
   let rsiChart;
@@ -35,6 +41,8 @@
   let baseHistory = [];
   let overlayCounter = 1;
   const overlays = new Map(); // id -> overlay definition
+  let defaultTimeRange = null;
+  let shouldResetZoom = false;
 
   const overlayTemplate = {
     type: 'sma',
@@ -45,6 +53,7 @@
   initCharts();
   bindEvents();
   loadOverview();
+  loadSnapshot();
   loadHistory();
   loadNews();
 
@@ -77,6 +86,41 @@
     }
   }
 
+  async function loadSnapshot() {
+    if (!metricDateSpottedEl || !metricPriceSpottedEl || !metricPriceChangeEl) return;
+    try {
+      const res = await fetch(`/api/stocks/${encodeURIComponent(symbol)}/snapshot`);
+      if (res.status === 404) {
+        renderSnapshot(null);
+        return;
+      }
+      if (!res.ok) throw new Error('Failed to fetch stock snapshot');
+      const data = await res.json();
+      renderSnapshot(data);
+    } catch (err) {
+      console.error(err);
+      renderSnapshot(null);
+    }
+  }
+
+  function renderSnapshot(snapshot) {
+    if (!metricDateSpottedEl || !metricPriceSpottedEl || !metricPriceChangeEl) return;
+    const dateLabel = snapshot?.date_spotted || snapshot?.date_added;
+    const formattedDate = formatDate(dateLabel);
+    metricDateSpottedEl.textContent = formattedDate || '—';
+
+    const initialPrice = snapshot?.initial_price;
+    metricPriceSpottedEl.textContent = initialPrice != null && !Number.isNaN(Number(initialPrice))
+      ? formatPrice(initialPrice)
+      : '—';
+
+    updatePercentDisplay(metricPriceChangeEl, snapshot?.percent_change);
+
+    if (snapshot?.current_price != null && !Number.isNaN(Number(snapshot.current_price))) {
+      priceValueEl.textContent = formatPrice(snapshot.current_price);
+    }
+  }
+
   async function loadHistory() {
     const interval = currentInterval;
     try {
@@ -84,6 +128,7 @@
       if (!res.ok) throw new Error('Failed to fetch price history');
       const data = await res.json();
       baseHistory = Array.isArray(data.points) ? data.points : [];
+      shouldResetZoom = true;
       updatePriceChart();
       lastUpdatedAt.textContent = `Updated: ${new Date().toLocaleString()}`;
       await refreshAllOverlays();
@@ -93,6 +138,7 @@
     } catch (err) {
       console.error(err);
       baseHistory = [];
+      shouldResetZoom = true;
       updatePriceChart();
       lastUpdatedAt.textContent = 'Updated: failed to load';
     }
@@ -112,6 +158,7 @@
   }
 
   function initCharts() {
+    registerZoomPlugin();
     priceChart = new Chart(priceCanvas, {
       type: 'line',
       data: { datasets: [] },
@@ -141,6 +188,29 @@
               },
             },
           },
+          zoom: {
+            limits: {
+              x: { min: 'original', max: 'original' },
+              y: { min: 'original', max: 'original' },
+            },
+            pan: {
+              enabled: true,
+              mode: 'x',
+              modifierKey: 'shift',
+            },
+            zoom: {
+              wheel: { enabled: true },
+              pinch: { enabled: true },
+              drag: {
+                enabled: true,
+                modifierKey: null,
+                borderColor: '#2563eb',
+                borderWidth: 1,
+                backgroundColor: 'rgba(37, 99, 235, 0.12)',
+              },
+              mode: 'x',
+            },
+          },
         },
         elements: { point: { radius: 0 } },
       },
@@ -150,10 +220,11 @@
   function updatePriceChart() {
     if (!priceChart) return;
     const datasets = [];
+    const pricePoints = mapHistoryToPoints(baseHistory, 'close');
     datasets.push({
       id: 'price',
       label: `${symbol} Close`,
-      data: mapHistoryToPoints(baseHistory, 'close'),
+      data: pricePoints,
       borderColor: '#1f2937',
       backgroundColor: 'rgba(96, 165, 250, 0.15)',
       fill: false,
@@ -166,7 +237,217 @@
       }
     });
     priceChart.data.datasets = datasets;
-    priceChart.update();
+    if (shouldResetZoom) {
+      defaultTimeRange = computeDefaultRange(pricePoints);
+      resetZoomInternal();
+      shouldResetZoom = false;
+    } else {
+      priceChart.update();
+    }
+  }
+
+  function computeDefaultRange(points) {
+    if (!Array.isArray(points) || points.length === 0) {
+      return null;
+    }
+    let min = null;
+    let max = null;
+    points.forEach((point) => {
+      if (!point || !point.x) {
+        return;
+      }
+      const value = point.x instanceof Date ? point.x.getTime() : new Date(point.x).getTime();
+      if (Number.isNaN(value)) {
+        return;
+      }
+      if (min === null || value < min) min = value;
+      if (max === null || value > max) max = value;
+    });
+    if (min === null || max === null || max <= min) {
+      return null;
+    }
+    return { min, max };
+  }
+
+  function resetZoomInternal() {
+    if (!priceChart) return;
+    const canUsePlugin = typeof priceChart.resetZoom === 'function';
+    if (canUsePlugin) {
+      try {
+        priceChart.resetZoom();
+      } catch (err) {
+        console.warn('Falling back to manual zoom reset', err);
+        manualResetZoom();
+      }
+      priceChart.update('none');
+      return;
+    }
+    manualResetZoom();
+    priceChart.update('none');
+  }
+
+  function zoomChartByFactor(factor) {
+    if (!priceChart) return;
+    if (typeof priceChart.zoom === 'function') {
+      try {
+        priceChart.zoom(factor);
+        priceChart.update('none');
+        return;
+      } catch (err) {
+        try {
+          priceChart.zoom({ x: { factor } });
+          priceChart.update('none');
+          return;
+        } catch (innerErr) {
+          console.warn('Zoom plugin call failed, using manual zoom', innerErr);
+        }
+      }
+    }
+    manualZoom(factor);
+  }
+
+  function manualZoom(factor) {
+    if (!priceChart || !defaultTimeRange) return;
+    const scale = priceChart.scales?.x;
+    if (!scale) return;
+    const currentRange = getCurrentRange(scale);
+    if (!currentRange) return;
+    const { min: currentMin, max: currentMax } = currentRange;
+    const defaultRange = defaultTimeRange.max - defaultTimeRange.min;
+    if (!Number.isFinite(defaultRange) || defaultRange <= 0) return;
+    const currentSpan = currentMax - currentMin;
+    if (!Number.isFinite(currentSpan) || currentSpan <= 0) return;
+    const targetSpan = currentSpan / factor;
+    const minSpan = Math.max(defaultRange / 200, 24 * 60 * 60 * 1000); // avoid over-zooming beyond a day
+    const nextSpan = Math.max(minSpan, targetSpan);
+    if (nextSpan >= defaultRange) {
+      manualResetZoom();
+      priceChart.update('none');
+      return;
+    }
+    const center = currentMin + currentSpan / 2;
+    let nextMin = center - nextSpan / 2;
+    let nextMax = center + nextSpan / 2;
+
+    if (nextMin < defaultTimeRange.min) {
+      const diff = defaultTimeRange.min - nextMin;
+      nextMin += diff;
+      nextMax += diff;
+    }
+    if (nextMax > defaultTimeRange.max) {
+      const diff = nextMax - defaultTimeRange.max;
+      nextMin -= diff;
+      nextMax -= diff;
+    }
+    nextMin = Math.max(defaultTimeRange.min, nextMin);
+    nextMax = Math.min(defaultTimeRange.max, nextMax);
+    if (nextMax <= nextMin) {
+      manualResetZoom();
+      priceChart.update('none');
+      return;
+    }
+    setScaleRange(nextMin, nextMax);
+    priceChart.update('none');
+  }
+
+  function manualResetZoom() {
+    const xOptions = priceChart?.options?.scales?.x;
+    if (!xOptions) return;
+    if (defaultTimeRange) {
+      xOptions.min = defaultTimeRange.min;
+      xOptions.max = defaultTimeRange.max;
+    } else {
+      delete xOptions.min;
+      delete xOptions.max;
+    }
+  }
+
+  function setScaleRange(min, max) {
+    const xOptions = priceChart?.options?.scales?.x;
+    if (!xOptions) return;
+    xOptions.min = min;
+    xOptions.max = max;
+  }
+
+  function getCurrentRange(scale) {
+    if (!scale) return null;
+    const resolvedMin = Number.isFinite(scale.min) ? scale.min : defaultTimeRange?.min;
+    const resolvedMax = Number.isFinite(scale.max) ? scale.max : defaultTimeRange?.max;
+    if (!Number.isFinite(resolvedMin) || !Number.isFinite(resolvedMax) || resolvedMax <= resolvedMin) {
+      return null;
+    }
+    return { min: resolvedMin, max: resolvedMax };
+  }
+
+  function updatePercentDisplay(element, rawValue) {
+    if (!element) return;
+    element.classList.remove('positive-change', 'negative-change');
+    if (rawValue == null || Number.isNaN(Number(rawValue))) {
+      element.textContent = '—';
+      return;
+    }
+    const numeric = Number(rawValue);
+    element.textContent = formatPercent(numeric);
+    if (numeric > 0) {
+      element.classList.add('positive-change');
+    } else if (numeric < 0) {
+      element.classList.add('negative-change');
+    }
+  }
+
+  function formatPercent(value) {
+    if (value == null || Number.isNaN(Number(value))) return '—';
+    const numeric = Number(value);
+    const fixed = numeric.toFixed(2);
+    const sign = numeric > 0 ? '+' : '';
+    return `${sign}${fixed}%`;
+  }
+
+  function formatDate(value) {
+    const parsed = parseDateValue(value);
+    if (!parsed) return null;
+    return parsed.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+
+  function parseDateValue(value) {
+    if (!value) return null;
+    const direct = new Date(value);
+    if (!Number.isNaN(direct.getTime())) return direct;
+    const fallback = new Date(`${value}T00:00:00`);
+    if (!Number.isNaN(fallback.getTime())) return fallback;
+    return null;
+  }
+
+  function registerZoomPlugin() {
+    if (typeof Chart === 'undefined' || typeof Chart.register !== 'function') return;
+    const plugin = resolveZoomPlugin();
+    if (!plugin) return;
+    try {
+      Chart.register(plugin);
+    } catch (err) {
+      if (!err || typeof err.message !== 'string' || !err.message.includes('already registered')) {
+        console.warn('Chart zoom plugin registration failed', err);
+      }
+    }
+  }
+
+  function resolveZoomPlugin() {
+    const pluginSources = [
+      window.chartjsPluginZoom,
+      window.chartjsPluginZoom?.default,
+      window.ChartZoom,
+      window.ChartZoom?.default,
+      window.Chart?.Zoom,
+      window.Chart?.Zoom?.default,
+      window['chartjs-plugin-zoom'],
+      window['chartjs-plugin-zoom']?.default,
+    ];
+    for (const source of pluginSources) {
+      if (source && typeof source === 'object' && source.id) {
+        return source;
+      }
+    }
+    return null;
   }
 
   async function refreshAllOverlays() {
@@ -247,6 +528,16 @@
         rsiToggle.checked = true;
       }
       await loadRsi(false);
+    });
+
+    zoomInBtn?.addEventListener('click', () => {
+      zoomChartByFactor(1.4);
+    });
+    zoomOutBtn?.addEventListener('click', () => {
+      zoomChartByFactor(0.7);
+    });
+    resetZoomBtn?.addEventListener('click', () => {
+      resetZoomInternal();
     });
   }
 
@@ -432,4 +723,3 @@
     return div.innerHTML;
   }
 })();
-

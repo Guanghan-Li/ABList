@@ -9,7 +9,27 @@
 <body>
   <div class="container">
     <header class="header">
-      <h1>Stock AB List Tracker</h1>
+      <div class="header-left">
+        <h1>Stock AB List Tracker</h1>
+        <div id="searchWrapper" class="search">
+          <label for="stockSearch" class="muted">Search</label>
+          <div class="search-control">
+            <input
+              id="stockSearch"
+              class="search-input"
+              type="search"
+              placeholder="Search symbol"
+              autocomplete="off"
+              inputmode="text"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded="false"
+              aria-controls="searchResults"
+            />
+            <ul id="searchResults" class="search-results hidden" role="listbox" aria-label="Stock suggestions"></ul>
+          </div>
+        </div>
+      </div>
       <div class="header-actions">
         <label for="viewSelector" class="muted">View</label>
         <select id="viewSelector" class="select">

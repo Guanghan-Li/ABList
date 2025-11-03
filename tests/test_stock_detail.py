@@ -1,4 +1,11 @@
+import os
+import sys
+
 import pytest
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from app import app
 
@@ -14,6 +21,34 @@ def test_stock_detail_page(client):
     response = client.get("/stocks/AAPL")
     assert response.status_code == 200
     assert b"AAPL" in response.data
+
+
+def test_search_returns_matches(client, monkeypatch):
+    sample = [
+        {"id": "1", "symbol": "AAPL", "list_type": "A"},
+        {"id": "2", "symbol": "AMZN", "list_type": "B"},
+        {"id": "3", "symbol": "MSFT", "list_type": "PA"},
+    ]
+    monkeypatch.setattr("app._read_stocks", lambda: sample)
+
+    response = client.get("/api/stocks/search?q=a")
+    assert response.status_code == 200
+    data = response.get_json()
+    assert {item["symbol"] for item in data["results"]} >= {"AAPL", "AMZN"}
+
+
+def test_search_handles_empty_query(client, monkeypatch):
+    monkeypatch.setattr("app._read_stocks", lambda: [])
+
+    response = client.get("/api/stocks/search?q=")
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["results"] == []
+
+
+def test_search_rejects_overlong_query(client):
+    response = client.get("/api/stocks/search?q=" + ("A" * 40))
+    assert response.status_code == 400
 
 
 def test_history_success(client, monkeypatch):
@@ -133,3 +168,49 @@ def test_overview_success(client, monkeypatch):
     data = response.get_json()
     assert data["longName"] == "Sample Corp"
 
+
+def test_snapshot_returns_latest_entry(client, monkeypatch):
+    sample = [
+        {
+            "id": "1",
+            "symbol": "AAPL",
+            "initial_price": 120.0,
+            "date_spotted": "2024-01-01",
+            "date_added": "2024-01-02",
+            "list_type": "A",
+        },
+        {
+            "id": "2",
+            "symbol": "AAPL",
+            "initial_price": 130.0,
+            "date_spotted": "2024-03-01",
+            "date_added": "2024-03-02",
+            "list_type": "B",
+        },
+    ]
+
+    monkeypatch.setattr("app._read_stocks", lambda: sample)
+    monkeypatch.setattr("app.get_current_prices", lambda symbols: {symbols[0]: 150.0})
+
+    def fake_percent_change(initial, current):
+        if initial in (None, 0) or current is None:
+            return None
+        return ((current - initial) / initial) * 100
+
+    monkeypatch.setattr("app.calculate_percent_change", fake_percent_change)
+
+    response = client.get("/api/stocks/AAPL/snapshot")
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["initial_price"] == 130.0
+    assert data["current_price"] == 150.0
+    assert pytest.approx(data["percent_change"], rel=1e-6) == ((150.0 - 130.0) / 130.0) * 100
+    assert data["list_type"] == "B"
+
+
+def test_snapshot_not_found(client, monkeypatch):
+    monkeypatch.setattr("app._read_stocks", lambda: [])
+    response = client.get("/api/stocks/TSLA/snapshot")
+    assert response.status_code == 404
+    data = response.get_json()
+    assert "error" in data
