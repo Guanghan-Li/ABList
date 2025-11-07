@@ -19,8 +19,12 @@ from flask import abort
 app = Flask(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STOCKS_FILE = os.path.join(BASE_DIR, "stocks.json")
-_file_lock = threading.Lock()  # Legacy fallback path
+DATA_ROOT_ENV = os.getenv("STOCKS_PATH")
+if DATA_ROOT_ENV:
+    DATA_ROOT = os.path.abspath(DATA_ROOT_ENV)
+else:
+    DATA_ROOT = os.path.join(BASE_DIR, "data")
+INDEX_FILE = os.path.join(DATA_ROOT, "index.json")
 VALID_LIST_TYPES = ("A", "B", "PA", "PB")
 VALID_LIST_TYPES_SET = set(VALID_LIST_TYPES)
 
@@ -50,30 +54,28 @@ def _resolve_int_env(name: str, default: int) -> int:
 
 PRICE_TTL_SECONDS = max(1, _resolve_int_env("PRICE_TTL_SECONDS", 15))
 
-DATA_PATH = os.getenv("STOCKS_PATH")
-if DATA_PATH:
-    DATA_PATH = os.path.abspath(DATA_PATH)
-else:
-    DATA_PATH = STOCKS_FILE
+DATA_PATH = INDEX_FILE
 
 _state_lock = threading.RLock()
-stocks: Dict[str, Dict[str, Any]] = {}
-by_list: Dict[str, List[str]] = {lt: [] for lt in VALID_LIST_TYPES}
-rendered_lists: Dict[str, List[Dict[str, Any]]] = {lt: [] for lt in VALID_LIST_TYPES}
-id_index: Dict[str, str] = {}
-state_version: int = 0
-_legacy_mode = False
+
+
+def _default_index() -> Dict[str, Any]:
+    return {
+        "by_id": {},
+        "by_symbol": {},
+        "weeks": {},
+        "latest_week": None,
+        "state_version": 0,
+    }
 
 
 def _ensure_file() -> None:
-    """Ensure the backing JSON file exists so legacy tools keep working."""
-    path = DATA_PATH or STOCKS_FILE
-    if os.path.exists(path):
+    """Ensure the index file exists so tooling can persist data."""
+    os.makedirs(DATA_ROOT, exist_ok=True)
+    if os.path.exists(INDEX_FILE):
         return
-    directory = os.path.dirname(path) or "."
-    os.makedirs(directory, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write("[]")
+    with open(INDEX_FILE, "w", encoding="utf-8") as fh:
+        json.dump(_default_index(), fh, indent=2)
 
 
 def _json_loads(data: bytes) -> Any:
@@ -88,6 +90,347 @@ def _json_dumps(data: Any) -> bytes:
     if USE_ORJSON and orjson is not None:
         return orjson.dumps(data, option=orjson.OPT_INDENT_2)
     return json.dumps(data, indent=2).encode("utf-8")
+
+
+def _load_index() -> Dict[str, Any]:
+    _ensure_file()
+    try:
+        with open(INDEX_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        data = _default_index()
+    merged = _default_index()
+    merged.update({k: data.get(k, v) for k, v in merged.items()})
+    # Ensure nested structures exist
+    if not isinstance(merged["by_id"], dict):
+        merged["by_id"] = {}
+    if not isinstance(merged["by_symbol"], dict):
+        merged["by_symbol"] = {}
+    if not isinstance(merged["weeks"], dict):
+        merged["weeks"] = {}
+    if not isinstance(merged.get("state_version"), int):
+        merged["state_version"] = 0
+    return merged
+
+
+def _save_index(state: Dict[str, Any]) -> None:
+    payload = dict(state)
+    _atomic_write_json(INDEX_FILE, payload)
+
+
+_index_state = _load_index()
+state_version = _index_state.get("state_version", 0)
+
+
+def _bump_state_version() -> None:
+    global state_version
+    state_version = (state_version or 0) + 1
+    _index_state["state_version"] = state_version
+
+
+def _normalize_symbol_key(symbol: Optional[str]) -> str:
+    return (symbol or "").strip().upper()
+
+
+def _week_dir(week_end: str) -> str:
+    return os.path.join(DATA_ROOT, week_end)
+
+
+def _list_file_path(week_end: str, list_type: str) -> str:
+    return os.path.join(_week_dir(week_end), f"{list_type}.json")
+
+
+def _ensure_week_entry(week_end: str) -> None:
+    week_end = week_end.strip()
+    if not week_end:
+        return
+    weeks = _index_state["weeks"]
+    if week_end not in weeks:
+        weeks[week_end] = {
+            "label": _format_week_label(_parse_date(week_end)),
+            "lists": {lt: {"count": 0} for lt in VALID_LIST_TYPES},
+        }
+    else:
+        lists = weeks[week_end].setdefault("lists", {})
+        for lt in VALID_LIST_TYPES:
+            lists.setdefault(lt, {"count": 0})
+    latest = _index_state.get("latest_week")
+    if not latest or week_end > latest:
+        _index_state["latest_week"] = week_end
+
+
+def _available_weeks(desc: bool = True) -> List[str]:
+    weeks = sorted(_index_state["weeks"].keys(), reverse=desc)
+    return weeks
+
+
+def _latest_week() -> str:
+    latest = _index_state.get("latest_week")
+    if latest:
+        return latest
+    today = datetime.utcnow().date()
+    week = _calculate_week_info(today)["week_end"]
+    _ensure_week_entry(week)
+    _bump_state_version()
+    _save_index(_index_state)
+    return week
+
+
+def _load_list_records(week_end: str, list_type: str) -> List[Dict[str, Any]]:
+    path = _list_file_path(week_end, list_type)
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, "rb") as fh:
+            data = _json_loads(fh.read())
+    except (OSError, json.JSONDecodeError):
+        return []
+    if isinstance(data, list):
+        return [record for record in data if isinstance(record, dict)]
+    return []
+
+
+def _save_list_records(week_end: str, list_type: str, records: List[Dict[str, Any]]) -> None:
+    os.makedirs(_week_dir(week_end), exist_ok=True)
+    path = _list_file_path(week_end, list_type)
+    _atomic_write_json(path, records)
+
+
+def _index_record(record: Dict[str, Any], week_end: str, list_type: str) -> None:
+    stock_id = str(record.get("id") or "").strip()
+    if not stock_id:
+        return
+    symbol = _normalize_symbol_key(record.get("symbol"))
+    meta = {
+        "week": week_end,
+        "list": list_type,
+        "symbol": symbol,
+        "date_added": record.get("date_added"),
+        "date_spotted": record.get("date_spotted"),
+    }
+    _index_state["by_id"][stock_id] = meta
+    if symbol:
+        entries = _index_state["by_symbol"].setdefault(symbol, [])
+        filtered = [entry for entry in entries if entry.get("id") != stock_id]
+        filtered.append({"id": stock_id, **meta})
+        filtered.sort(key=lambda item: (item.get("week"), item.get("date_added") or item.get("week")))
+        _index_state["by_symbol"][symbol] = filtered
+
+
+def _remove_index_entry(stock_id: str) -> None:
+    stock_id = str(stock_id or "").strip()
+    if not stock_id:
+        return
+    entry = _index_state["by_id"].pop(stock_id, None)
+    if not entry:
+        return
+    symbol = entry.get("symbol")
+    if symbol:
+        normalized = _normalize_symbol_key(symbol)
+        entries = _index_state["by_symbol"].get(normalized, [])
+        _index_state["by_symbol"][normalized] = [item for item in entries if item.get("id") != stock_id]
+
+
+def _update_week_counts(week_end: str, list_type: str, count: int) -> None:
+    _ensure_week_entry(week_end)
+    week_info = _index_state["weeks"][week_end]
+    week_info.setdefault("lists", {})
+    week_info["lists"].setdefault(list_type, {})
+    week_info["lists"][list_type]["count"] = count
+
+
+def _rebuild_index_from_files() -> bool:
+    found = False
+    if not os.path.isdir(DATA_ROOT):
+        return False
+    entries = sorted(os.listdir(DATA_ROOT))
+    _index_state["by_id"] = {}
+    _index_state["by_symbol"] = {}
+    _index_state["weeks"] = {}
+    for entry in entries:
+        week_path = os.path.join(DATA_ROOT, entry)
+        if not os.path.isdir(week_path):
+            continue
+        try:
+            _parse_date(entry)
+        except Exception:
+            continue
+        _ensure_week_entry(entry)
+        for lt in VALID_LIST_TYPES:
+            records = _load_list_records(entry, lt)
+            if not records:
+                continue
+            found = True
+            _update_week_counts(entry, lt, len(records))
+            for record in records:
+                _index_record(record, entry, lt)
+    if found:
+        _save_index(_index_state)
+    return found
+
+
+def _load_grouped_lists(weeks: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    grouped = {lt: [] for lt in VALID_LIST_TYPES}
+    for week in weeks:
+        normalized_week = week.strip()
+        if not normalized_week:
+            continue
+        for lt in VALID_LIST_TYPES:
+            records = _load_list_records(normalized_week, lt)
+            for record in records:
+                entry = dict(record)
+                entry["week_end"] = normalized_week
+                grouped[lt].append(entry)
+    return grouped
+
+
+def _read_stocks(weeks: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    target_weeks = weeks or [_latest_week()]
+    grouped = _load_grouped_lists(target_weeks)
+    flattened: List[Dict[str, Any]] = []
+    for lt in VALID_LIST_TYPES:
+        flattened.extend(grouped.get(lt, []))
+    return flattened
+
+
+def _parse_weeks_param(raw: Optional[str]) -> List[str]:
+    if not raw:
+        return []
+    entries: List[str] = []
+    parts = [part.strip() for part in raw.split(",") if part.strip()]
+    for part in parts:
+        if ".." in part:
+            start, end = part.split("..", 1)
+            entries.extend(_expand_week_range(start.strip(), end.strip()))
+        elif ":" in part:
+            start, end = part.split(":", 1)
+            entries.extend(_expand_week_range(start.strip(), end.strip()))
+        else:
+            entries.append(part)
+    normalized: List[str] = []
+    seen = set()
+    for week in entries:
+        normalized_week = _normalize_week_value(week)
+        if not normalized_week:
+            continue
+        if normalized_week not in seen:
+            normalized.append(normalized_week)
+            seen.add(normalized_week)
+    return normalized
+
+
+def _normalize_week_value(value: str) -> Optional[str]:
+    value = (value or "").strip()
+    if not value:
+        return None
+    try:
+        dt = _parse_date(value)
+    except Exception:
+        return None
+    week_end = _calculate_week_info(dt)["week_end"]
+    return week_end
+
+
+def _expand_week_range(start: str, end: str) -> List[str]:
+    start_week = _normalize_week_value(start)
+    end_week = _normalize_week_value(end)
+    if not start_week or not end_week:
+        return []
+    start_date = _parse_date(start_week)
+    end_date = _parse_date(end_week)
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+    weeks: List[str] = []
+    current = start_date
+    while current <= end_date:
+        info = _calculate_week_info(current)
+        week_end = info["week_end"]
+        if week_end not in weeks:
+            weeks.append(week_end)
+        current += timedelta(days=7)
+    if end_week not in weeks:
+        weeks.append(end_week)
+    return weeks
+
+
+def _resolve_weeks_from_request() -> List[str]:
+    raw = (request.args.get("week") or "").strip()
+    parsed = _parse_weeks_param(raw)
+    available = set(_available_weeks(desc=False))
+    filtered = [week for week in parsed if week in available]
+    if filtered:
+        return filtered
+    latest = _latest_week()
+    return [latest]
+
+
+def _remove_record_from_file(week_end: str, list_type: str, stock_id: str) -> bool:
+    records = _load_list_records(week_end, list_type)
+    if not records:
+        return False
+    updated = [record for record in records if str(record.get("id")) != str(stock_id)]
+    if len(updated) == len(records):
+        return False
+    _save_list_records(week_end, list_type, updated)
+    _update_week_counts(week_end, list_type, len(updated))
+    return True
+
+
+def _upsert_record(record: Dict[str, Any], previous: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    normalized = _normalize_loaded_row(record)
+    if not normalized:
+        raise ValueError("invalid stock payload")
+    stock_id = normalized.get("id")
+    if not stock_id:
+        raise ValueError("stock id is required")
+    target_week = normalized.get("week_end")
+    if not target_week:
+        target_week = _calculate_week_info(normalized.get("date_spotted") or normalized.get("date_added"))["week_end"]
+        normalized["week_end"] = target_week
+    target_list = _normalize_list_type(normalized.get("list_type"))
+    normalized["list_type"] = target_list
+    with _state_lock:
+        _ensure_week_entry(target_week)
+        records = _load_list_records(target_week, target_list)
+        replaced = False
+        for idx, existing in enumerate(records):
+            if str(existing.get("id")) == str(stock_id):
+                records[idx] = normalized
+                replaced = True
+                break
+        if not replaced:
+            records.append(normalized)
+        _save_list_records(target_week, target_list, records)
+        _update_week_counts(target_week, target_list, len(records))
+        if previous and (
+            previous.get("week") != target_week or _normalize_list_type(previous.get("list")) != target_list
+        ):
+            _remove_record_from_file(previous["week"], _normalize_list_type(previous["list"]), stock_id)
+        _index_record(normalized, target_week, target_list)
+        _bump_state_version()
+        _save_index(_index_state)
+    return normalized
+
+
+def _delete_record(stock_id: str) -> bool:
+    stock_id = str(stock_id or "").strip()
+    if not stock_id:
+        return False
+    with _state_lock:
+        entry = _index_state["by_id"].get(stock_id)
+        if not entry:
+            return False
+        week = entry.get("week")
+        list_type = entry.get("list")
+        if not week or not list_type:
+            return False
+        removed = _remove_record_from_file(week, list_type, stock_id)
+        if not removed:
+            return False
+        _remove_index_entry(stock_id)
+        _bump_state_version()
+        _save_index(_index_state)
+        return True
 
 
 def _normalize_list_type(list_type: Optional[str]) -> str:
@@ -259,125 +602,6 @@ def _json_error(message: str, status: int = 400):
     return jsonify({"error": message}), status
 
 
-def _build_rendered_entry(symbol: str, row: Dict[str, Any]) -> Dict[str, Any]:
-    payload = dict(row)
-    payload["symbol"] = symbol
-    return payload
-
-
-def _rebuild_indexes_from_stocks(source: Optional[Dict[str, Dict[str, Any]]] = None
-                                ) -> Tuple[Dict[str, List[str]], Dict[str, List[Dict[str, Any]]], Dict[str, str]]:
-    base = source or stocks
-    lists: Dict[str, List[str]] = {lt: [] for lt in VALID_LIST_TYPES}
-    rendered: Dict[str, List[Dict[str, Any]]] = {lt: [] for lt in VALID_LIST_TYPES}
-    ids: Dict[str, str] = {}
-    for symbol, row in base.items():
-        if not isinstance(row, dict):
-            continue
-        list_type = _normalize_list_type(row.get("list_type"))
-        lists.setdefault(list_type, []).append(symbol)
-        rendered.setdefault(list_type, []).append(_build_rendered_entry(symbol, row))
-        row_id = row.get("id")
-        if row_id:
-            ids[str(row_id)] = symbol
-    return lists, rendered, ids
-
-
-def _legacy_read_stocks() -> List[Dict[str, Any]]:
-    data: List[Dict[str, Any]] = []
-    path = DATA_PATH or STOCKS_FILE
-    if not os.path.exists(path):
-        return data
-    with _file_lock:
-        try:
-            with open(path, "r", encoding="utf-8") as fh:
-                loaded = json.load(fh)
-        except (OSError, json.JSONDecodeError):
-            return data
-    if isinstance(loaded, list):
-        data = [item for item in loaded if isinstance(item, dict)]
-    elif isinstance(loaded, dict):
-        payload = loaded.get("stocks")
-        if isinstance(payload, list):
-            data = [item for item in payload if isinstance(item, dict)]
-    return data
-
-
-def _normalize_loaded_row(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    try:
-        symbol = _normalize_symbol(row.get("symbol"))
-    except ValueError:
-        return None
-    normalized: Dict[str, Any] = dict(row)
-    normalized["symbol"] = symbol
-    normalized["list_type"] = _normalize_list_type(normalized.get("list_type"))
-    if "id" in normalized and normalized["id"] is None:
-        normalized.pop("id")
-    _apply_week_defaults(normalized)
-    return normalized
-
-
-def _load_stocks_from_disk() -> bool:
-    global stocks, by_list, rendered_lists, id_index, state_version, _legacy_mode
-    path = DATA_PATH or STOCKS_FILE
-    if not os.path.exists(path):
-        stocks = {}
-        by_list, rendered_lists, id_index = _rebuild_indexes_from_stocks({})
-        state_version = 1
-        app.logger.info("Stock store initialized: no existing data file found at %s", path)
-        return True
-    try:
-        with open(path, "rb") as fh:
-            raw = fh.read()
-        loaded = _json_loads(raw)
-    except Exception as exc:  # pragma: no cover - fallback path
-        _legacy_mode = True
-        app.logger.exception("Stock store initialization failed; falling back to legacy disk reads: %s", exc)
-        return False
-
-    rows: List[Dict[str, Any]] = []
-    if isinstance(loaded, list):
-        rows = [item for item in loaded if isinstance(item, dict)]
-    elif isinstance(loaded, dict):
-        payload = loaded.get("stocks")
-        if isinstance(payload, list):
-            rows = [item for item in payload if isinstance(item, dict)]
-
-    new_stocks: Dict[str, Dict[str, Any]] = {}
-    for row in rows:
-        normalized = _normalize_loaded_row(row)
-        if not normalized:
-            continue
-        new_stocks[normalized["symbol"]] = normalized
-
-    stocks = new_stocks
-    by_list_local, rendered_local, ids_local = _rebuild_indexes_from_stocks(new_stocks)
-    by_list = by_list_local
-    rendered_lists = rendered_local
-    id_index = ids_local
-    state_version = 1
-    app.logger.info("Stock store initialized from %s with %d entries", path, len(stocks))
-    return True
-
-
-def _save_state(new_stocks: Dict[str, Dict[str, Any]]) -> None:
-    global stocks, by_list, rendered_lists, id_index, state_version
-    by_local, rendered_local, ids_local = _rebuild_indexes_from_stocks(new_stocks)
-    stocks = new_stocks
-    by_list = by_local
-    rendered_lists = rendered_local
-    id_index = ids_local
-    state_version = state_version + 1 if state_version else 1
-
-
-def _legacy_write_stocks(records: List[Dict[str, Any]]) -> None:
-    path = DATA_PATH or STOCKS_FILE
-    directory = os.path.dirname(path) or "."
-    os.makedirs(directory, exist_ok=True)
-    with _file_lock:
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump(records, fh, indent=2)
-
 
 def _atomic_write_json(path: str, data: Any) -> None:
     directory = os.path.dirname(path) or "."
@@ -397,137 +621,36 @@ def _atomic_write_json(path: str, data: Any) -> None:
             pass
 
 
-def _legacy_upsert(row: Dict[str, Any], previous_symbol: Optional[str] = None) -> Dict[str, Any]:
-    records = _legacy_read_stocks()
-    target_symbol = previous_symbol or row.get("symbol")
-    normalized_symbol = (target_symbol or "").strip().upper()
-    replacement_symbol = (row.get("symbol") or "").strip().upper()
-    updated = False
-    for idx, existing in enumerate(records):
-        if not isinstance(existing, dict):
-            continue
-        sym = (existing.get("symbol") or "").strip().upper()
-        if sym in {normalized_symbol, replacement_symbol}:
-            records[idx] = dict(row)
-            updated = True
-            break
-    if not updated:
-        records.append(dict(row))
-    _legacy_write_stocks(records)
-    return row
-
-
-def _legacy_delete(symbol: str) -> Optional[Dict[str, Any]]:
-    records = _legacy_read_stocks()
-    normalized_symbol = (symbol or "").strip().upper()
-    new_records = []
-    removed = None
-    for record in records:
-        if not isinstance(record, dict):
-            continue
-        sym = (record.get("symbol") or "").strip().upper()
-        if sym == normalized_symbol and removed is None:
-            removed = record
-            continue
-        new_records.append(record)
-    if removed is not None:
-        _legacy_write_stocks(new_records)
-    return removed
-
-
-def _persist_state(new_stocks: Dict[str, Dict[str, Any]]) -> None:
-    path = DATA_PATH or STOCKS_FILE
-    payload = list(new_stocks.values())
-    _atomic_write_json(path, payload)
-    _save_state(new_stocks)
-    app.logger.info("Atomic stock store write complete (%d records)", len(new_stocks))
-
-
-def _upsert_stock(row: Dict[str, Any], previous_symbol: Optional[str] = None) -> Dict[str, Any]:
-    sanitized = _normalize_loaded_row(row) or {}
-    if not sanitized:
-        raise ValueError("invalid stock payload")
-    symbol = sanitized["symbol"]
-    with _state_lock:
-        if _legacy_mode:
-            return _legacy_upsert(sanitized, previous_symbol)
-        new_stocks = dict(stocks)
-        if previous_symbol and previous_symbol in new_stocks and previous_symbol != symbol:
-            new_stocks.pop(previous_symbol, None)
-        new_stocks[symbol] = sanitized
-        try:
-            _persist_state(new_stocks)
-        except Exception:
-            app.logger.exception("Failed to persist stock %s", symbol)
-            raise
-    return sanitized
-
-
-def _delete_stock(symbol: str) -> Optional[Dict[str, Any]]:
-    normalized = (symbol or "").strip().upper()
-    with _state_lock:
-        if _legacy_mode:
-            return _legacy_delete(normalized)
-        if normalized not in stocks:
-            return None
-        new_stocks = dict(stocks)
-        removed = new_stocks.pop(normalized, None)
-        try:
-            _persist_state(new_stocks)
-        except Exception:
-            app.logger.exception("Failed to delete stock %s", normalized)
-            raise
-    return removed
-
-
-def _read_stocks() -> List[Dict[str, Any]]:
-    if _legacy_mode:
-        return _legacy_read_stocks()
-    return [_build_rendered_entry(symbol, row) for symbol, row in stocks.items()]
-
-_ORIGINAL_READ_STOCKS = _read_stocks
+def _normalize_loaded_row(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    try:
+        symbol = _normalize_symbol(row.get("symbol"))
+    except ValueError:
+        return None
+    normalized: Dict[str, Any] = dict(row)
+    normalized["symbol"] = symbol
+    normalized["list_type"] = _normalize_list_type(normalized.get("list_type"))
+    if not normalized.get("id"):
+        normalized["id"] = str(uuid.uuid4())
+    _apply_week_defaults(normalized)
+    return normalized
 
 
 def _get_stock_by_id(stock_id: str) -> Optional[Tuple[str, Dict[str, Any]]]:
+    stock_id = str(stock_id or "").strip()
     if not stock_id:
         return None
-    if _legacy_mode:
-        for row in _legacy_read_stocks():
-            if not isinstance(row, dict):
-                continue
-            if str(row.get("id")) == str(stock_id):
-                symbol = (row.get("symbol") or "").strip().upper()
-                if not symbol:
-                    return None
-                row_copy = dict(row)
-                row_copy["symbol"] = symbol
-                return symbol, row_copy
+    entry = _index_state["by_id"].get(stock_id)
+    if not entry:
         return None
-    symbol = id_index.get(str(stock_id))
-    if not symbol:
+    week = entry.get("week")
+    list_type = _normalize_list_type(entry.get("list"))
+    if not week:
         return None
-    row = stocks.get(symbol)
-    if not row:
-        return None
-    return symbol, dict(row)
-
-
-def _filter_rendered_items(items: Iterable[Dict[str, Any]], week_filter: str) -> List[Dict[str, Any]]:
-    if not week_filter:
-        return [dict(item) for item in items]
-    target = week_filter.strip()
-    return [
-        dict(item)
-        for item in items
-        if (item.get("week_end") or "").strip() == target
-    ]
-
-
-def _flatten_rendered_lists(source: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
-    merged: List[Dict[str, Any]] = []
-    for lst in VALID_LIST_TYPES:
-        merged.extend([dict(item) for item in source.get(lst, [])])
-    return merged
+    records = _load_list_records(week, list_type)
+    for record in records:
+        if str(record.get("id")) == stock_id:
+            return record.get("symbol"), dict(record)
+    return None
 
 
 def _make_etag_token(*parts: Any) -> str:
@@ -580,25 +703,25 @@ def _calculate_week_info(date_str: Optional[object] = None) -> Dict[str, str]:
 def _apply_week_defaults(row: Dict[str, Any]) -> None:
     if not isinstance(row, dict):
         return
-    has_date_added = bool(row.get("date_added"))
-    has_week_end = bool(row.get("week_end"))
-    has_week_label = bool(row.get("week_label"))
-    if has_date_added and has_week_end and has_week_label:
-        return
     source_date = row.get("date_spotted") or row.get("date_added")
     base_date = _parse_date(source_date if isinstance(source_date, str) else None)
     week_info = _calculate_week_info(base_date)
-    if not has_date_added:
+    if not row.get("date_added"):
         row["date_added"] = base_date.isoformat()
-    if not has_week_end:
-        row["week_end"] = week_info["week_end"]
-    if not has_week_label:
-        row["week_label"] = week_info["week_label"]
+    row["week_end"] = week_info["week_end"]
+    row["week_label"] = week_info["week_label"]
 
 
-if not _load_stocks_from_disk():
-    app.logger.warning("Using legacy disk-backed stock access path; performance optimizations disabled.")
+def _initialize_storage() -> None:
+    _ensure_file()
+    if not _index_state["weeks"]:
+        if not _rebuild_index_from_files():
+            latest = _calculate_week_info(datetime.utcnow().date())["week_end"]
+            _ensure_week_entry(latest)
+            _save_index(_index_state)
 
+
+_initialize_storage()
 price_cache = PriceCache(ttl_seconds=PRICE_TTL_SECONDS)
 
 
@@ -618,32 +741,10 @@ def stock_detail(symbol: str):
 
 @app.route("/api/stocks", methods=["GET"])
 def get_stocks():
-    week_filter = (request.args.get("week") or "").strip()
-    list_filter_raw = request.args.get("list")
-    if _legacy_mode:
-        records = _legacy_read_stocks()
-        if week_filter:
-            records = [r for r in records if (r.get("week_end") or "").strip() == week_filter]
-        grouped = {lt: [] for lt in VALID_LIST_TYPES}
-        for record in records:
-            lt = _normalize_list_type(record.get("list_type"))
-            grouped.setdefault(lt, []).append(record)
-        if list_filter_raw:
-            lt = _normalize_list_type(list_filter_raw)
-            grouped = {lt: grouped.get(lt, [])}
-        return jsonify(grouped)
-
-    if list_filter_raw:
-        lt = _normalize_list_type(list_filter_raw)
-        items = rendered_lists.get(lt, [])
-        payload = {lt: _filter_rendered_items(items, week_filter)}
-    else:
-        payload = {
-            lt: _filter_rendered_items(rendered_lists.get(lt, []), week_filter)
-            for lt in VALID_LIST_TYPES
-        }
-    response = jsonify(payload)
-    return _maybe_set_cache_headers(response, state_version, list_filter_raw or "all", week_filter or "all")
+    weeks = _resolve_weeks_from_request()
+    grouped = _load_grouped_lists(weeks)
+    response = jsonify(grouped)
+    return _maybe_set_cache_headers(response, state_version, ",".join(weeks))
 
 
 @app.route("/api/stocks/search", methods=["GET"])
@@ -656,7 +757,8 @@ def search_stocks():
         return _json_error("query must be 32 characters or fewer", 400)
 
     list_filter_raw = request.args.get("list")
-    universe = _read_stocks()
+    weeks = _resolve_weeks_from_request()
+    universe = _read_stocks(weeks=weeks)
     if list_filter_raw:
         list_filter = _normalize_list_type(list_filter_raw)
         universe = [row for row in universe if _normalize_list_type(row.get("list_type")) == list_filter]
@@ -682,25 +784,12 @@ def search_stocks():
 
 @app.route("/api/weeks", methods=["GET"])
 def get_weeks():
-    if _legacy_mode:
-        stocks_iterable = _legacy_read_stocks()
-    else:
-        stocks_iterable = _flatten_rendered_lists(rendered_lists)
-    weeks: Dict[str, str] = {}
-    for stock in stocks_iterable:
-        if not isinstance(stock, dict):
-            continue
-        week_end = (stock.get("week_end") or "").strip()
-        if not week_end:
-            continue
-        week_label = stock.get("week_label")
-        if not week_label:
-            week_label = _calculate_week_info(week_end)["week_label"]
-        if week_end not in weeks:
-            weeks[week_end] = week_label
-    week_list = [{"week_end": key, "week_label": value} for key, value in weeks.items()]
-    week_list.sort(key=lambda item: item["week_end"], reverse=True)
-    return jsonify(week_list)
+    weeks = []
+    for week_end in _available_weeks(desc=True):
+        info = _index_state["weeks"].get(week_end, {})
+        week_label = info.get("label") or _format_week_label(_parse_date(week_end))
+        weeks.append({"week_end": week_end, "week_label": week_label})
+    return jsonify(weeks)
 
 
 @app.route("/api/stocks", methods=["POST"])
@@ -722,8 +811,6 @@ def create_stock():
     except Exception:
         return jsonify({"error": "initial_price must be a number"}), 400
 
-    today = datetime.utcnow().date()
-    week_info = _calculate_week_info(today)
     stock = {
         "id": str(uuid.uuid4()),
         "symbol": symbol,
@@ -731,15 +818,13 @@ def create_stock():
         "reason": reason,
         "date_spotted": date_spotted,
         "date_bought": date_bought,
-        "date_added": today.isoformat(),
-        "week_end": week_info["week_end"],
-        "week_label": week_info["week_label"],
+        "date_added": datetime.utcnow().date().isoformat(),
         "list_type": list_type,
     }
     _apply_week_defaults(stock)
 
     try:
-        stored = _upsert_stock(stock)
+        stored = _upsert_record(stock)
     except Exception:
         return _json_error("failed to persist stock", 500)
 
@@ -785,7 +870,8 @@ def update_stock(stock_id: str):
     _apply_week_defaults(updated)
 
     try:
-        stored = _upsert_stock(updated, previous_symbol=current_symbol)
+        prev_meta = _index_state["by_id"].get(stock_id, {})
+        stored = _upsert_record(updated, previous=prev_meta)
     except Exception:
         return _json_error("failed to persist stock changes", 500)
 
@@ -794,52 +880,47 @@ def update_stock(stock_id: str):
 
 @app.route("/api/stocks/<stock_id>", methods=["DELETE"])
 def delete_stock(stock_id: str):
-    target = _get_stock_by_id(stock_id)
-    if not target:
-        return jsonify({"error": "stock not found"}), 404
-    symbol, _ = target
     try:
-        _delete_stock(symbol)
+        removed = _delete_record(stock_id)
     except Exception:
-        return _json_error("failed to delete stock", 500)
+        removed = False
+    if not removed:
+        return jsonify({"error": "stock not found"}), 404
     return jsonify({"success": True})
 
 
 @app.route("/api/stocks/prices", methods=["GET"])
 def get_prices():
-    if _legacy_mode:
-        records = _legacy_read_stocks()
-        symbols = [(record.get("symbol") or "").strip().upper() for record in records if record.get("symbol")]
-        sym_to_initial = {
-            (record.get("symbol") or "").strip().upper(): record.get("initial_price")
-            for record in records if record.get("symbol")
-        }
-    else:
-        symbols = []
-        for lt in VALID_LIST_TYPES:
-            symbols.extend(by_list.get(lt, []))
-        sym_to_initial = {
-            symbol: stocks.get(symbol, {}).get("initial_price")
-            for symbol in symbols
-        }
-
+    weeks = _resolve_weeks_from_request()
+    grouped = _load_grouped_lists(weeks)
+    rows = []
+    for lt in VALID_LIST_TYPES:
+        rows.extend(grouped.get(lt, []))
+    symbols = []
+    sym_to_initial: Dict[str, Optional[float]] = {}
+    id_to_symbol: Dict[str, str] = {}
+    for row in rows:
+        stock_id = str(row.get("id") or "").strip()
+        symbol = _normalize_symbol_key(row.get("symbol"))
+        if not stock_id or not symbol:
+            continue
+        id_to_symbol[stock_id] = symbol
+        symbols.append(symbol)
+        sym_to_initial[stock_id] = row.get("initial_price")
     prices = price_cache.get_many(symbols)
     result = []
-    for sym in symbols:
-        if not sym:
-            continue
-        initial = sym_to_initial.get(sym)
-        current = prices.get(sym)
+    for stock_id, symbol in id_to_symbol.items():
+        initial = sym_to_initial.get(stock_id)
+        current = prices.get(symbol)
         pct = calculate_percent_change(initial, current)
         result.append({
-            "symbol": sym,
+            "id": stock_id,
+            "symbol": symbol,
             "current_price": current,
             "percent_change": pct,
         })
     response = jsonify(result)
-    if _legacy_mode:
-        return response
-    return _maybe_set_cache_headers(response, state_version, "prices")
+    return _maybe_set_cache_headers(response, state_version, "prices", ",".join(weeks))
 
 
 @app.route("/api/prices", methods=["GET"])
@@ -851,8 +932,6 @@ def get_prices_cached():
     prices = price_cache.get_many(symbols)
     ordered = {sym: prices.get(sym) for sym in symbols}
     response = jsonify({"prices": ordered})
-    if _legacy_mode:
-        return response
     return _maybe_set_cache_headers(response, state_version, "prices", ",".join(symbols))
 
 
@@ -872,29 +951,40 @@ def get_stock_snapshot(symbol: str):
         sym = _normalize_symbol(symbol)
     except ValueError as exc:
         return _json_error(str(exc), 400)
+    entries = _index_state["by_symbol"].get(sym)
+    record = None
 
-    use_hooked_read = _legacy_mode or (_read_stocks is not _ORIGINAL_READ_STOCKS)
-    if use_hooked_read:
-        source_rows = _legacy_read_stocks() if _legacy_mode else _read_stocks()
-        candidates = [
-            row for row in source_rows
-            if isinstance(row, dict) and (row.get("symbol") or "").strip().upper() == sym
-        ]
-        if not candidates:
-            return _json_error("stock not found", 404)
+    def _entry_key(entry: Dict[str, Any]) -> Tuple[str, str]:
+        reference = entry.get("date_spotted") or entry.get("date_added") or entry.get("week")
+        return (reference, entry.get("week"))
 
-        def _sort_key(stock: Dict[str, Any]) -> date:
-            reference = stock.get("date_added") or stock.get("date_spotted")
-            return _parse_date(reference if isinstance(reference, str) else None)
-
-        latest = dict(max(candidates, key=_sort_key))
+    if entries:
+        latest_entry = max(entries, key=_entry_key)
+        week = latest_entry.get("week")
+        list_type = _normalize_list_type(latest_entry.get("list"))
+        stock_id = latest_entry.get("id")
+        if week and list_type:
+            records = _load_list_records(week, list_type)
+            for candidate in records:
+                if str(candidate.get("id")) == str(stock_id):
+                    record = dict(candidate)
+                    break
     else:
-        row = stocks.get(sym)
-        if not row:
-            return _json_error("stock not found", 404)
-        latest = dict(row)
+        # Fallback for tests or manual data edits: scan in-memory snapshot
+        candidates = [
+            row for row in _read_stocks()
+            if isinstance(row, dict) and _normalize_symbol_key(row.get("symbol")) == sym
+        ]
+        if candidates:
+            record = max(
+                candidates,
+                key=lambda stock: _parse_date(stock.get("week_end") or stock.get("date_added") or stock.get("date_spotted"))
+            )
 
-    initial_price = latest.get("initial_price")
+    if not record:
+        return _json_error("stock not found", 404)
+
+    initial_price = record.get("initial_price")
     try:
         initial_price = float(initial_price) if initial_price is not None else None
     except (TypeError, ValueError):
@@ -913,11 +1003,11 @@ def get_stock_snapshot(symbol: str):
 
     payload = {
         "symbol": sym,
-        "id": latest.get("id"),
-        "list_type": latest.get("list_type"),
+        "id": record.get("id"),
+        "list_type": record.get("list_type"),
         "initial_price": initial_price,
-        "date_spotted": latest.get("date_spotted"),
-        "date_added": latest.get("date_added"),
+        "date_spotted": record.get("date_spotted"),
+        "date_added": record.get("date_added"),
         "current_price": current_price,
         "percent_change": percent_change,
     }

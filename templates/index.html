@@ -38,10 +38,18 @@
           <option value="PA">Stored A</option>
           <option value="PB">Stored B</option>
         </select>
-        <label for="weekSelector" class="muted">Week</label>
-        <select id="weekSelector" class="select">
-          <option value="" selected>All Weeks</option>
-        </select>
+        <label for="weekSelector" class="muted">Weeks</label>
+        <div class="week-controls">
+          <div class="week-select-group">
+            <select id="weekSelector" class="select week-select" aria-label="Week start"></select>
+            <select id="weekSelectorEnd" class="select week-select hidden" aria-label="Week end"></select>
+          </div>
+          <label class="week-range-toggle">
+            <input type="checkbox" id="weekRangeToggle" />
+            Range
+          </label>
+        </div>
+        <div id="weekSummary" class="week-summary muted">Week: —</div>
         <button id="refreshBtn" class="btn btn-secondary">Refresh Prices</button>
         <span id="lastUpdated" class="muted">Last updated: —</span>
       </div>

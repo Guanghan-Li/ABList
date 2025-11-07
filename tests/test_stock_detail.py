@@ -7,6 +7,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+import app as app_module
 from app import app
 
 
@@ -29,7 +30,7 @@ def test_search_returns_matches(client, monkeypatch):
         {"id": "2", "symbol": "AMZN", "list_type": "B"},
         {"id": "3", "symbol": "MSFT", "list_type": "PA"},
     ]
-    monkeypatch.setattr("app._read_stocks", lambda: sample)
+    monkeypatch.setattr("app._read_stocks", lambda *args, **kwargs: sample)
 
     response = client.get("/api/stocks/search?q=a")
     assert response.status_code == 200
@@ -38,7 +39,7 @@ def test_search_returns_matches(client, monkeypatch):
 
 
 def test_search_handles_empty_query(client, monkeypatch):
-    monkeypatch.setattr("app._read_stocks", lambda: [])
+    monkeypatch.setattr("app._read_stocks", lambda *args, **kwargs: [])
 
     response = client.get("/api/stocks/search?q=")
     assert response.status_code == 200
@@ -170,6 +171,8 @@ def test_overview_success(client, monkeypatch):
 
 
 def test_snapshot_returns_latest_entry(client, monkeypatch):
+    monkeypatch.setitem(app_module._index_state, "by_symbol", {})
+    monkeypatch.setitem(app_module._index_state, "by_id", {})
     sample = [
         {
             "id": "1",
@@ -189,7 +192,7 @@ def test_snapshot_returns_latest_entry(client, monkeypatch):
         },
     ]
 
-    monkeypatch.setattr("app._read_stocks", lambda: sample)
+    monkeypatch.setattr("app._read_stocks", lambda *args, **kwargs: sample)
     monkeypatch.setattr("app.get_current_prices", lambda symbols: {symbols[0]: 150.0})
 
     def fake_percent_change(initial, current):
@@ -209,7 +212,9 @@ def test_snapshot_returns_latest_entry(client, monkeypatch):
 
 
 def test_snapshot_not_found(client, monkeypatch):
-    monkeypatch.setattr("app._read_stocks", lambda: [])
+    monkeypatch.setitem(app_module._index_state, "by_symbol", {})
+    monkeypatch.setitem(app_module._index_state, "by_id", {})
+    monkeypatch.setattr("app._read_stocks", lambda *args, **kwargs: [])
     response = client.get("/api/stocks/TSLA/snapshot")
     assert response.status_code == 404
     data = response.get_json()

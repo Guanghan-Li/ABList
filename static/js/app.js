@@ -2,6 +2,9 @@
   const singleListContainer = document.getElementById('singleListContainer');
   const viewSelector = document.getElementById('viewSelector');
   const weekSelector = document.getElementById('weekSelector');
+  const weekSelectorEnd = document.getElementById('weekSelectorEnd');
+  const weekRangeToggle = document.getElementById('weekRangeToggle');
+  const weekSummaryEl = document.getElementById('weekSummary');
   const listTitle = document.getElementById('listTitle');
   const addStockForm = document.getElementById('addStockForm');
   const formMessage = document.getElementById('formMessage');
@@ -34,6 +37,61 @@
 
   function listTitleFor(type) {
     return LIST_TITLES[type] || 'Stocks';
+  }
+
+  function normalizeWeekRange(a, b) {
+    if (!a) return [b, b];
+    if (!b) return [a, a];
+    return a <= b ? [a, b] : [b, a];
+  }
+
+  function getWeekQueryParam() {
+    if (!weekSelector) return '';
+    const startVal = weekSelector.value || '';
+    if (!startVal) return '';
+    if (weekRangeToggle?.checked && weekSelectorEnd?.value) {
+      const [minWeek, maxWeek] = normalizeWeekRange(startVal, weekSelectorEnd.value);
+      if (minWeek === maxWeek) {
+        return minWeek;
+      }
+      return `${minWeek}..${maxWeek}`;
+    }
+    return startVal;
+  }
+
+  function updateWeekSummary() {
+    if (!weekSummaryEl) return;
+    if (!weekSelector || !weekSelector.value) {
+      weekSummaryEl.textContent = 'Week: —';
+      return;
+    }
+    const startLabel = weekSelector.selectedOptions[0]?.textContent || weekSelector.value;
+    if (weekRangeToggle?.checked && weekSelectorEnd && weekSelectorEnd.value && weekSelectorEnd.value !== weekSelector.value) {
+      const endLabel = Array.from(weekSelectorEnd.options || []).find((opt) => opt.value === weekSelectorEnd.value)?.textContent || weekSelectorEnd.value;
+      weekSummaryEl.textContent = `${startLabel} → ${endLabel}`;
+    } else {
+      weekSummaryEl.textContent = startLabel;
+    }
+  }
+
+  function syncRangeSelection() {
+    if (!weekSelector || !weekSelectorEnd) {
+      updateWeekSummary();
+      return;
+    }
+    if (weekRangeToggle?.checked) {
+      weekSelectorEnd.classList.remove('hidden');
+      if (!weekSelectorEnd.value) {
+        weekSelectorEnd.value = weekSelector.value;
+      }
+      const [minWeek, maxWeek] = normalizeWeekRange(weekSelector.value, weekSelectorEnd.value);
+      weekSelector.value = minWeek;
+      weekSelectorEnd.value = maxWeek;
+    } else {
+      weekSelectorEnd.classList.add('hidden');
+      weekSelectorEnd.value = weekSelector.value;
+    }
+    updateWeekSummary();
   }
 
   function isActiveList(type) {
@@ -418,10 +476,10 @@
   async function loadStocks() {
     singleListContainer.innerHTML = loader();
     try {
-      const selectedWeek = weekSelector?.value || '';
+      const weekQuery = getWeekQueryParam();
       let url = '/api/stocks';
-      if (selectedWeek) {
-        const params = new URLSearchParams({ week: selectedWeek });
+      if (weekQuery) {
+        const params = new URLSearchParams({ week: weekQuery });
         url = `${url}?${params.toString()}`;
       }
       const res = await fetch(url);
@@ -442,25 +500,40 @@
       const res = await fetch('/api/weeks');
       if (!res.ok) throw new Error('Failed to load weeks');
       const weeks = await res.json();
-      const previousValue = weekSelector.value;
-      while (weekSelector.options.length > 1) {
-        weekSelector.remove(1);
+      const previousStart = weekSelector.value;
+      const previousEnd = weekSelectorEnd?.value;
+      while (weekSelector.options.length > 0) {
+        weekSelector.remove(0);
       }
+      if (weekSelectorEnd) {
+        while (weekSelectorEnd.options.length > 0) {
+          weekSelectorEnd.remove(0);
+        }
+      }
+      const weekValues = [];
       if (Array.isArray(weeks)) {
         weeks.forEach((week) => {
           if (!week || !week.week_end) return;
-          const option = document.createElement('option');
-          option.value = week.week_end;
-          option.textContent = week.week_label || `Week of ${week.week_end}`;
-          weekSelector.appendChild(option);
+          const label = week.week_label || `Week of ${week.week_end}`;
+          const optionStart = new Option(label, week.week_end);
+          weekSelector.appendChild(optionStart);
+          if (weekSelectorEnd) {
+            const optionEnd = new Option(label, week.week_end);
+            weekSelectorEnd.appendChild(optionEnd);
+          }
+          weekValues.push(week.week_end);
         });
       }
-      if (previousValue) {
-        const hasValue = Array.from(weekSelector.options).some((opt) => opt.value === previousValue);
-        weekSelector.value = hasValue ? previousValue : '';
+      if (weekValues.length) {
+        weekSelector.value = weekValues.includes(previousStart) ? previousStart : weekValues[0];
+        if (weekSelectorEnd) {
+          weekSelectorEnd.value = weekValues.includes(previousEnd) ? previousEnd : weekSelector.value;
+        }
       } else {
         weekSelector.value = '';
+        if (weekSelectorEnd) weekSelectorEnd.value = '';
       }
+      syncRangeSelection();
     } catch (err) {
       console.error(err);
     }
@@ -477,7 +550,13 @@
   async function updatePrices() {
     setRefreshing(true);
     try {
-      const res = await fetch('/api/stocks/prices');
+      const weekQuery = getWeekQueryParam();
+      let url = '/api/stocks/prices';
+      if (weekQuery) {
+        const params = new URLSearchParams({ week: weekQuery });
+        url = `${url}?${params.toString()}`;
+      }
+      const res = await fetch(url);
       if (!res.ok) throw new Error('Failed to fetch prices');
       const list = await res.json();
       const now = new Date().toLocaleTimeString();
@@ -503,17 +582,24 @@
 
   function applyPrices(priceList) {
     if (!Array.isArray(priceList)) return;
+    const byId = Object.create(null);
     const bySymbol = Object.create(null);
     for (const it of priceList) {
       if (!it || !it.symbol) continue;
-      bySymbol[it.symbol] = it;
+      const symbolKey = it.symbol.toUpperCase();
+      bySymbol[symbolKey] = it;
+      if (it.id) {
+        byId[it.id] = it;
+      }
     }
     const rows = singleListContainer.querySelectorAll('tbody tr');
     rows.forEach((row) => {
       const symbol = row.getAttribute('data-symbol');
+      const rowId = row.getAttribute('data-id');
       const priceCell = row.querySelector('.col-current');
       const changeCell = row.querySelector('.col-change');
-      const info = bySymbol[symbol];
+      const symbolKey = (symbol || '').toUpperCase();
+      const info = (rowId && byId[rowId]) || bySymbol[symbolKey];
       if (!info) return;
       const cp = info.current_price;
       const pct = info.percent_change;
@@ -721,14 +807,27 @@
     await updatePrices();
   });
   weekSelector?.addEventListener('change', async () => {
+    syncRangeSelection();
+    await loadStocks();
+    await updatePrices();
+  });
+  weekSelectorEnd?.addEventListener('change', async () => {
+    syncRangeSelection();
+    await loadStocks();
+    await updatePrices();
+  });
+  weekRangeToggle?.addEventListener('change', async () => {
+    syncRangeSelection();
     await loadStocks();
     await updatePrices();
   });
 
+  syncRangeSelection();
+
   // Initial load
   (async function init() {
-    await loadStocks();
     await loadWeeks();
+    await loadStocks();
     await updatePrices();
     setInterval(updatePrices, 60000); // 60s auto-refresh
   })();
