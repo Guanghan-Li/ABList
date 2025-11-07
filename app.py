@@ -739,6 +739,12 @@ def stock_detail(symbol: str):
     return render_template("stock_detail.html", symbol=sym)
 
 
+@app.route("/position_sizer_atr.html")
+@app.route("/position-sizer")
+def position_sizer():
+    return render_template("position_sizer_atr.html")
+
+
 @app.route("/api/stocks", methods=["GET"])
 def get_stocks():
     weeks = _resolve_weeks_from_request()

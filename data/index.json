@@ -1,0 +1,42 @@
+{
+  "by_id": {},
+  "by_symbol": {},
+  "weeks": {
+    "2025-11-09": {
+      "label": "Week of 11/09/25",
+      "lists": {
+        "A": {
+          "count": 0
+        },
+        "B": {
+          "count": 0
+        },
+        "PA": {
+          "count": 0
+        },
+        "PB": {
+          "count": 0
+        }
+      }
+    },
+    "2025-11-16": {
+      "label": "Week of 11/16/25",
+      "lists": {
+        "A": {
+          "count": 0
+        },
+        "B": {
+          "count": 0
+        },
+        "PA": {
+          "count": 0
+        },
+        "PB": {
+          "count": 0
+        }
+      }
+    }
+  },
+  "latest_week": "2025-11-16",
+  "state_version": 0
+}

@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ATR Position Sizer</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0f172a;
+      --bg-card: #1e293b;
+      --border: #334155;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --danger: #f87171;
+      --pill-bg: rgba(56, 189, 248, 0.15);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+    a { color: inherit; text-decoration: none; }
+    .navbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      justify-content: center;
+      gap: 12px;
+      padding: 16px;
+      background: rgba(15, 23, 42, 0.95);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .nav-link {
+      padding: 10px 18px;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      color: var(--muted);
+      font-weight: 600;
+      transition: background 0.2s ease, color 0.2s ease, border 0.2s ease;
+    }
+    .nav-link:hover { color: var(--text); border-color: var(--border); }
+    .nav-link.active {
+      background: var(--accent);
+      color: #0f172a;
+      border-color: transparent;
+    }
+    .page {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 32px 16px 64px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    .title { margin: 0; font-size: 2rem; }
+    .subtitle { margin: 0; color: var(--muted); }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 20px;
+    }
+    @media (min-width: 960px) {
+      .grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    }
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 20px;
+      box-shadow: 0 18px 30px rgba(15, 23, 42, 0.45);
+    }
+    form { display: grid; gap: 16px; }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    label { font-size: 0.9rem; color: var(--muted); }
+    input[type="text"],
+    input[type="number"] {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: rgba(15, 23, 42, 0.6);
+      color: var(--text);
+      font-size: 1rem;
+    }
+    input::placeholder { color: rgba(148, 163, 184, 0.6); }
+    .inline-toggle { display: flex; align-items: center; gap: 10px; }
+    .actions { display: flex; gap: 12px; flex-wrap: wrap; }
+    button {
+      border: none;
+      border-radius: 999px;
+      padding: 10px 18px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.15s ease;
+    }
+    button:active { transform: scale(0.98); }
+    .btn-primary { background: var(--accent); color: #0f172a; }
+    .btn-secondary { background: rgba(148, 163, 184, 0.2); color: var(--text); }
+    .error {
+      display: none;
+      padding: 10px 14px;
+      border-radius: 10px;
+      background: rgba(248, 113, 113, 0.15);
+      border: 1px solid rgba(248, 113, 113, 0.4);
+      color: var(--danger);
+      font-size: 0.9rem;
+    }
+    .error.show { display: block; }
+    .results { display: none; flex-direction: column; gap: 16px; }
+    .results.show { display: flex; }
+    .result-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      border-bottom: 1px dashed rgba(148, 163, 184, 0.3);
+      padding-bottom: 8px;
+    }
+    .result-row:last-child { border-bottom: none; }
+    .result-label { color: var(--muted); font-size: 0.95rem; }
+    .result-value { font-weight: 600; font-size: 1rem; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      border-radius: 999px;
+      padding: 2px 10px;
+      font-size: 0.8rem;
+      background: var(--pill-bg);
+      color: var(--accent);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+    }
+    th, td {
+      padding: 8px 10px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    th { color: var(--muted); font-weight: 500; }
+    .notes { font-size: 0.9rem; color: var(--danger); min-height: 1.2rem; }
+    details {
+      background: rgba(15, 23, 42, 0.5);
+      border-radius: 12px;
+      border: 1px dashed var(--border);
+      padding: 12px 16px;
+      color: var(--muted);
+    }
+    summary { cursor: pointer; font-weight: 600; color: var(--text); }
+    .targets { display: none; }
+    .targets.show { display: block; }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <a class="nav-link" href="{{ url_for('index') }}">📈 Stock List</a>
+    <a class="nav-link active" href="{{ url_for('position_sizer') }}">🧮 ATR Position Sizer</a>
+  </nav>
+  <main class="page">
+    <header>
+      <h1 class="title">ATR Position Sizer</h1>
+      <p class="subtitle">Calculate position size, stop distance, and reward multiples.</p>
+    </header>
+    <div class="grid">
+      <section class="card">
+        <form id="sizerForm" novalidate>
+          <div class="field">
+            <label for="account_value">Account Value (USD)</label>
+            <input type="number" id="account_value" min="0" step="0.01" required />
+          </div>
+          <div class="field">
+            <label for="risk_pct">Risk % of Account</label>
+            <input type="number" id="risk_pct" min="0" step="0.01" placeholder="1–2" required />
+          </div>
+          <div class="field">
+            <label for="ticker">Ticker</label>
+            <input type="text" id="ticker" maxlength="12" required />
+          </div>
+          <div class="field">
+            <label for="entry_price">Entry Price (USD)</label>
+            <input type="number" id="entry_price" min="0" step="0.0001" required />
+          </div>
+          <div class="field">
+            <label for="atr_value">ATR (USD)</label>
+            <input type="number" id="atr_value" min="0" step="0.0001" required />
+          </div>
+          <div class="field">
+            <label for="atr_multiple">ATR Multiple</label>
+            <input type="number" id="atr_multiple" min="0" step="0.1" value="1" required />
+          </div>
+          <div class="field">
+            <label for="max_position_pct">Max Position % (optional)</label>
+            <input type="number" id="max_position_pct" min="0" step="0.01" />
+          </div>
+          <div class="field">
+            <label for="slippage_pct">Slippage %</label>
+            <input type="number" id="slippage_pct" min="0" step="0.01" value="0" />
+          </div>
+          <div class="field">
+            <label for="commission_per_trade">Commission per Trade (USD)</label>
+            <input type="number" id="commission_per_trade" min="0" step="0.01" value="0" />
+          </div>
+          <div class="field inline-toggle">
+            <label for="allow_fractional">Allow fractional shares</label>
+            <input type="checkbox" id="allow_fractional" checked />
+          </div>
+          <div class="field">
+            <label for="t1">Target Price 1 (optional)</label>
+            <input type="number" id="t1" step="0.0001" />
+          </div>
+          <div class="field">
+            <label for="t2">Target Price 2 (optional)</label>
+            <input type="number" id="t2" step="0.0001" />
+          </div>
+          <div class="field">
+            <label for="t3">Target Price 3 (optional)</label>
+            <input type="number" id="t3" step="0.0001" />
+          </div>
+          <div id="formErr" class="error"></div>
+          <div class="actions">
+            <button type="submit" class="btn-primary">Calculate</button>
+            <button type="button" class="btn-secondary" id="resetBtn">Reset</button>
+          </div>
+        </form>
+      </section>
+      <section class="card results" id="resultsCard">
+        <div class="result-row"><span class="result-label">Ticker</span><span class="result-value" id="out_ticker">—</span></div>
+        <div class="result-row"><span class="result-label">Entry</span><span class="result-value" id="out_entry">$0.0000</span></div>
+        <div class="result-row"><span class="result-label">Stop (ATR × <span id="out_atr_mult">1.0</span>)</span><span class="result-value" id="out_stop">$0.0000</span></div>
+        <div class="result-row"><span class="result-label">Per-share risk</span><span class="result-value" id="out_psr">$0.0000</span></div>
+        <div class="result-row">
+          <span class="result-label">Account risk cap</span>
+          <span class="result-value"><span id="out_accrisk">$0.0000</span><span class="pill" id="riskPill">0%</span></span>
+        </div>
+        <div class="result-row"><span class="result-label">Shares to buy</span><span class="result-value" id="out_shares">0.0000</span></div>
+        <div class="result-row">
+          <span class="result-label">Position cost</span>
+          <span class="result-value"><span id="out_poscost">$0.0000</span><span class="pill" id="posPill">0%</span></span>
+        </div>
+        <div class="result-row"><span class="result-label">Total risk on trade</span><span class="result-value" id="out_totalrisk">$0.0000</span></div>
+        <div class="notes" id="notes"></div>
+        <div class="targets" id="targetsWrap">
+          <h3>Targets</h3>
+          <table>
+            <thead>
+              <tr>
+                <th>Target</th>
+                <th>Reward / Share</th>
+                <th>R Multiple</th>
+              </tr>
+            </thead>
+            <tbody id="targetsBody"></tbody>
+          </table>
+        </div>
+        <details>
+          <summary>Formula</summary>
+          <p>shares = (account_value × risk_pct / 100) / (atr_value × atr_multiple + slippage_pct / 100 × entry_price)</p>
+        </details>
+      </section>
+      <section class="card results" id="atrTargets">
+        <h3>ATR Profit Ladder</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Level</th>
+              <th>Target Price</th>
+              <th>Reward / Share</th>
+              <th>% Change</th>
+              <th>Total Reward</th>
+            </tr>
+          </thead>
+          <tbody id="atrTargetsBody">
+            <tr><td colspan="5" style="text-align:center; color:var(--muted);">Run a calculation to see ATR targets.</td></tr>
+          </tbody>
+        </table>
+      </section>
+    </div>
+  </main>
+  <script>
+    (function () {
+      const form = document.getElementById('sizerForm');
+      const resetBtn = document.getElementById('resetBtn');
+      const errBox = document.getElementById('formErr');
+      const resultsCard = document.getElementById('resultsCard');
+      const atrTargets = document.getElementById('atrTargets');
+      const atrTargetsBody = document.getElementById('atrTargetsBody');
+      const notesEl = document.getElementById('notes');
+      const targetsWrap = document.getElementById('targetsWrap');
+      const targetsBody = document.getElementById('targetsBody');
+      const riskPill = document.getElementById('riskPill');
+      const posPill = document.getElementById('posPill');
+
+      const requiredFields = ['account_value', 'risk_pct', 'ticker', 'entry_price', 'atr_value'];
+
+      function parseNumber(id, fallback = NaN) {
+        const input = document.getElementById(id);
+        if (!input) return fallback;
+        const value = input.value.trim();
+        if (!value) return fallback;
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : fallback;
+      }
+
+      function formatUSD(value) {
+        return `$${Number(value).toFixed(2)}`;
+      }
+
+      function formatNum(value) {
+        return Number(value).toFixed(2);
+      }
+
+      function setText(id, value) {
+        const node = document.getElementById(id);
+        if (node) node.textContent = value;
+      }
+
+      function showError(message) {
+        errBox.textContent = message;
+        errBox.classList.add('show');
+      }
+
+      function clearAlerts() {
+        errBox.textContent = '';
+        errBox.classList.remove('show');
+        notesEl.textContent = '';
+        targetsBody.innerHTML = '';
+        targetsWrap.classList.remove('show');
+        atrTargetsBody.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--muted);">Run a calculation to see ATR targets.</td></tr>';
+        atrTargets.classList.remove('show');
+      }
+
+      function handleSubmit(event) {
+        event.preventDefault();
+        clearAlerts();
+
+        const values = {
+          account_value: parseNumber('account_value'),
+          risk_pct: parseNumber('risk_pct'),
+          ticker: (document.getElementById('ticker').value || '').trim().toUpperCase(),
+          entry_price: parseNumber('entry_price'),
+          atr_value: parseNumber('atr_value'),
+          atr_multiple: parseNumber('atr_multiple', 1) || 1,
+          max_position_pct: parseNumber('max_position_pct', 0),
+          slippage_pct: parseNumber('slippage_pct', 0) || 0,
+          commission_per_trade: parseNumber('commission_per_trade', 0) || 0,
+          allow_fractional: document.getElementById('allow_fractional').checked,
+          targets: [
+            parseNumber('t1'),
+            parseNumber('t2'),
+            parseNumber('t3'),
+          ].filter((value) => Number.isFinite(value)),
+        };
+
+        const invalidInput = requiredFields.some((id) => {
+          if (id === 'ticker') {
+            return !values.ticker;
+          }
+          return !Number.isFinite(values[id]) || values[id] <= 0;
+        });
+        if (invalidInput) {
+          showError('Please fill in all required fields with valid values.');
+          return;
+        }
+
+        const stop_distance = values.atr_value * values.atr_multiple;
+        const stop_price = values.entry_price - stop_distance;
+        const per_share_risk = stop_distance + (values.slippage_pct / 100) * values.entry_price;
+        if (per_share_risk <= 0) {
+          showError('Per-share risk must be positive.');
+          return;
+        }
+
+        const account_risk_usd = values.account_value * (values.risk_pct / 100);
+        let raw_shares = account_risk_usd / per_share_risk;
+        let shares = values.allow_fractional ? raw_shares : Math.floor(raw_shares);
+        if (!Number.isFinite(shares) || shares <= 0) {
+          showError('Calculated share size is invalid. Adjust your inputs.');
+          return;
+        }
+
+        let position_cost = shares * values.entry_price + values.commission_per_trade;
+        let capped = false;
+        if (values.max_position_pct && values.max_position_pct > 0) {
+          const maxPosUSD = values.account_value * (values.max_position_pct / 100);
+          if (position_cost > maxPosUSD) {
+            shares = (maxPosUSD - values.commission_per_trade) / values.entry_price;
+            shares = values.allow_fractional ? shares : Math.floor(shares);
+            position_cost = shares * values.entry_price + values.commission_per_trade;
+            capped = true;
+          }
+        }
+
+        if (!Number.isFinite(shares) || shares <= 0) {
+          showError('Share count became invalid after applying caps. Adjust inputs.');
+          return;
+        }
+
+        const risk_usd = shares * per_share_risk;
+        const portfolio_pct_used = (position_cost / values.account_value) * 100;
+
+        setText('out_ticker', values.ticker);
+        setText('out_entry', formatUSD(values.entry_price));
+        setText('out_atr_mult', formatNum(values.atr_multiple));
+        setText('out_stop', formatUSD(stop_price));
+        setText('out_psr', formatUSD(per_share_risk));
+        setText('out_accrisk', formatUSD(account_risk_usd));
+        riskPill.textContent = `${values.risk_pct.toFixed(2)}%`;
+        setText('out_shares', formatNum(shares));
+        setText('out_poscost', formatUSD(position_cost));
+        posPill.textContent = `${portfolio_pct_used.toFixed(2)}%`;
+        setText('out_totalrisk', formatUSD(risk_usd));
+
+        const notes = [];
+        if (stop_price <= 0) notes.push('Stop price ≤ 0 — check inputs.');
+        if (!values.allow_fractional && shares < 1) notes.push('Share count < 1 without fractional shares — increase risk % or choose cheaper ticker.');
+        if (capped && risk_usd < account_risk_usd) notes.push('Capped by max position % — total risk is below account risk cap.');
+        notesEl.textContent = notes.join(' ');
+
+        if (values.targets.length) {
+          targetsBody.innerHTML = values.targets.map((target, idx) => {
+            const reward = target - values.entry_price;
+            const rMultiple = reward / per_share_risk;
+            return `<tr>
+              <td>Target ${idx + 1}: $${target.toFixed(2)}</td>
+              <td>${reward.toFixed(2)}</td>
+              <td>${rMultiple.toFixed(2)}</td>
+            </tr>`;
+          }).join('');
+          targetsWrap.classList.add('show');
+        } else {
+          targetsWrap.classList.remove('show');
+        }
+
+        resultsCard.classList.add('show');
+        atrTargets.classList.add('show');
+        const atrRows = [1, 1.5, 2, 2.5, 3].map((multiple) => {
+          const targetPrice = values.entry_price + values.atr_value * multiple;
+          const rewardPerShare = targetPrice - values.entry_price;
+          const pctChange = (rewardPerShare / values.entry_price) * 100;
+          const totalReward = rewardPerShare * shares;
+          return `<tr>
+            <td>${multiple.toFixed(1)}× ATR</td>
+            <td>${targetPrice.toFixed(2)}</td>
+            <td>${rewardPerShare.toFixed(2)}</td>
+            <td>${pctChange.toFixed(2)}%</td>
+            <td>${totalReward.toFixed(2)}</td>
+          </tr>`;
+        }).join('');
+        atrTargetsBody.innerHTML = atrRows;
+
+        if (window.innerWidth < 760) {
+          resultsCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }
+
+      function handleReset() {
+        form.reset();
+        document.getElementById('atr_multiple').value = '1';
+        document.getElementById('slippage_pct').value = '0';
+        document.getElementById('commission_per_trade').value = '0';
+        document.getElementById('allow_fractional').checked = true;
+        errBox.classList.remove('show');
+        errBox.textContent = '';
+        notesEl.textContent = '';
+        targetsBody.innerHTML = '';
+        targetsWrap.classList.remove('show');
+        resultsCard.classList.remove('show');
+      }
+
+      form.addEventListener('submit', handleSubmit);
+      resetBtn.addEventListener('click', handleReset);
+    })();
+  </script>
+</body>
+</html>

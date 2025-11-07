@@ -4,6 +4,10 @@ body.modal-open { overflow: hidden; }
 .hidden { display: none !important; }
 
 .container { max-width: 1280px; margin: 24px auto; padding: 0 16px; }
+.app-nav { position: sticky; top: 0; display: flex; justify-content: center; gap: 12px; padding: 16px; margin-bottom: 16px; background: rgba(15, 23, 42, 0.9); backdrop-filter: blur(12px); border-bottom: 1px solid rgba(148, 163, 184, 0.2); z-index: 50; }
+.app-nav__link { padding: 10px 18px; border-radius: 999px; color: #cbd5f5; border: 1px solid transparent; font-weight: 600; text-decoration: none; transition: background 0.2s ease, color 0.2s ease, border 0.2s ease; }
+.app-nav__link:hover { color: #fff; border-color: rgba(148, 163, 184, 0.4); }
+.app-nav__link--active { background: #38bdf8; color: #0f172a; }
 .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; gap: 20px; flex-wrap: wrap; background: #fff; border-radius: 20px; padding: 20px 24px; box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08); }
 .header-left { display: flex; flex-direction: row; align-items: center; gap: 20px; flex: 1 1 360px; flex-wrap: wrap; }
 .header h1 { margin: 0; font-size: 28px; line-height: 1.2; }
