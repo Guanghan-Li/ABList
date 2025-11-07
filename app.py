@@ -725,6 +725,23 @@ _initialize_storage()
 price_cache = PriceCache(ttl_seconds=PRICE_TTL_SECONDS)
 
 
+def _ensure_prices(prices: Dict[str, Optional[float]], symbols: List[str]) -> Dict[str, Optional[float]]:
+    missing = [sym for sym in symbols if sym and prices.get(sym) is None]
+    if not missing:
+        return prices
+    try:
+        fetched = get_current_prices(missing) or {}
+    except Exception:
+        fetched = {}
+    for sym in missing:
+        value = fetched.get(sym)
+        if sym not in prices or prices[sym] is None:
+            prices[sym] = value
+        if value is not None:
+            price_cache.prime(sym, value)
+    return prices
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -914,6 +931,7 @@ def get_prices():
         symbols.append(symbol)
         sym_to_initial[stock_id] = row.get("initial_price")
     prices = price_cache.get_many(symbols)
+    prices = _ensure_prices(prices, symbols)
     result = []
     for stock_id, symbol in id_to_symbol.items():
         initial = sym_to_initial.get(stock_id)
@@ -936,6 +954,7 @@ def get_prices_cached():
     if not symbols:
         return jsonify({"prices": {}})
     prices = price_cache.get_many(symbols)
+    prices = _ensure_prices(prices, symbols)
     ordered = {sym: prices.get(sym) for sym in symbols}
     response = jsonify({"prices": ordered})
     return _maybe_set_cache_headers(response, state_version, "prices", ",".join(symbols))

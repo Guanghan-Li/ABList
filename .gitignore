@@ -12,7 +12,7 @@ venv/
 instance/
 
 # Data files
-stocks.json
+*.json
 
 # IDEs and editors
 .vscode/
