@@ -291,13 +291,63 @@ def fetch_news(symbol: str, limit: int = MAX_NEWS_ITEMS) -> List[Dict]:
         for article in raw_news[:limit]:
             if not isinstance(article, dict):
                 continue
+
+            # Handle new yfinance API structure where content is nested
+            content = article.get("content", article)
+
+            # Extract title
+            title = _safe_str(content.get("title"))
+
+            # Extract link - try clickThroughUrl first, then canonicalUrl, then fallback to old structure
+            link = None
+            click_through = content.get("clickThroughUrl")
+            canonical = content.get("canonicalUrl")
+            if isinstance(click_through, dict):
+                link = _safe_str(click_through.get("url"))
+            elif isinstance(canonical, dict):
+                link = _safe_str(canonical.get("url"))
+            else:
+                link = _safe_str(content.get("link"))
+
+            # Extract publisher
+            publisher = None
+            provider = content.get("provider")
+            if isinstance(provider, dict):
+                publisher = _safe_str(provider.get("displayName"))
+            else:
+                publisher = _safe_str(content.get("publisher"))
+
+            # Extract type
+            article_type = _safe_str(content.get("contentType") or content.get("type"))
+
+            # Extract thumbnail - check new structure first
+            thumbnail = None
+            thumb_obj = content.get("thumbnail")
+            if isinstance(thumb_obj, dict):
+                thumbnail = _safe_str(thumb_obj.get("originalUrl"))
+                if not thumbnail:
+                    resolutions = thumb_obj.get("resolutions", [])
+                    if isinstance(resolutions, list) and len(resolutions) > 0:
+                        thumbnail = _safe_str(resolutions[0].get("url"))
+            if not thumbnail:
+                thumbnail = _extract_thumbnail_url(content)
+
+            # Extract publish time - try new pubDate field first
+            pub_time = content.get("pubDate")
+            if pub_time:
+                # pubDate is already in ISO format
+                published_at = _safe_str(pub_time)
+            else:
+                # Fallback to old providerPublishTime (Unix timestamp)
+                published_at = _timestamp_to_iso(content.get("providerPublishTime"))
+
             sanitized = {
-                "title": _safe_str(article.get("title")),
-                "link": _safe_str(article.get("link")),
-                "publisher": _safe_str(article.get("publisher")),
-                "type": _safe_str(article.get("type")),
-                "thumbnail": _extract_thumbnail_url(article),
-                "published_at": _timestamp_to_iso(article.get("providerPublishTime")),
+                "title": title,
+                "link": link,
+                "publisher": publisher,
+                "type": article_type,
+                "thumbnail": thumbnail,
+                "published_at": published_at,
             }
             if not (sanitized["title"] or sanitized["link"]):
                 continue

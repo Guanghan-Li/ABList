@@ -1,48 +1,94 @@
 (function () {
+  // Constants
+  const ZOOM_CONSTANTS = {
+    IN_FACTOR: 1.4,
+    OUT_FACTOR: 0.7,
+    MAX_ZOOM_DIVISOR: 200,
+    MIN_SPAN_MS: 24 * 60 * 60 * 1000, // 1 day in milliseconds
+  };
+
+  const RSI_THRESHOLDS = {
+    OVERBOUGHT: 70,
+    OVERSOLD: 30,
+  };
+
+  const DEBOUNCE_DELAY = 50; // ms
+
+  // Symbol validation
   const symbol = (window.STOCK_SYMBOL || '').trim().toUpperCase();
   if (!symbol) {
     console.error('Missing stock symbol for detail view.');
     return;
   }
 
-  const intervalSelect = document.getElementById('intervalSelect');
-  const lastUpdatedAt = document.getElementById('lastUpdatedAt');
-  const priceCanvas = document.getElementById('priceChart');
-  const priceValueEl = document.getElementById('currentPrice');
-  const priceCurrencyEl = document.getElementById('priceCurrency');
-  const companyNameEl = document.getElementById('companyName');
-  const summaryNameEl = document.getElementById('summaryName');
-  const summarySectorEl = document.getElementById('summarySector');
-  const summaryIndustryEl = document.getElementById('summaryIndustry');
-  const summaryMarketCapEl = document.getElementById('summaryMarketCap');
-  const summaryWebsiteEl = document.getElementById('summaryWebsite');
-  const summaryDescriptionEl = document.getElementById('summaryDescription');
-  const overlayForm = document.getElementById('overlayForm');
-  const overlayTypeEl = document.getElementById('overlayType');
-  const overlayWindowEl = document.getElementById('overlayWindow');
-  const overlayColorEl = document.getElementById('overlayColor');
-  const overlayListEl = document.getElementById('overlayList');
-  const rsiToggle = document.getElementById('rsiToggle');
-  const rsiPeriodEl = document.getElementById('rsiPeriod');
-  const rsiApplyBtn = document.getElementById('rsiApply');
-  const rsiWrapper = document.getElementById('rsiChartWrapper');
-  const rsiCanvas = document.getElementById('rsiChart');
-  const newsListEl = document.getElementById('newsList');
-  const metricDateSpottedEl = document.getElementById('metricDateSpotted');
-  const metricPriceSpottedEl = document.getElementById('metricPriceSpotted');
-  const metricPriceChangeEl = document.getElementById('metricPriceChange');
-  const zoomInBtn = document.getElementById('zoomInBtn');
-  const zoomOutBtn = document.getElementById('zoomOutBtn');
-  const resetZoomBtn = document.getElementById('resetZoomBtn');
+  // DOM elements with null checks
+  const elements = {
+    intervalSelect: document.getElementById('intervalSelect'),
+    lastUpdatedAt: document.getElementById('lastUpdatedAt'),
+    priceCanvas: document.getElementById('priceChart'),
+    priceValueEl: document.getElementById('currentPrice'),
+    priceCurrencyEl: document.getElementById('priceCurrency'),
+    companyNameEl: document.getElementById('companyName'),
+    summaryNameEl: document.getElementById('summaryName'),
+    summarySectorEl: document.getElementById('summarySector'),
+    summaryIndustryEl: document.getElementById('summaryIndustry'),
+    summaryMarketCapEl: document.getElementById('summaryMarketCap'),
+    summaryWebsiteEl: document.getElementById('summaryWebsite'),
+    summaryDescriptionEl: document.getElementById('summaryDescription'),
+    overlayForm: document.getElementById('overlayForm'),
+    overlayTypeEl: document.getElementById('overlayType'),
+    overlayWindowEl: document.getElementById('overlayWindow'),
+    overlayColorEl: document.getElementById('overlayColor'),
+    overlayListEl: document.getElementById('overlayList'),
+    rsiToggle: document.getElementById('rsiToggle'),
+    rsiPeriodEl: document.getElementById('rsiPeriod'),
+    rsiApplyBtn: document.getElementById('rsiApply'),
+    rsiWrapper: document.getElementById('rsiChartWrapper'),
+    rsiCanvas: document.getElementById('rsiChart'),
+    newsListEl: document.getElementById('newsList'),
+    metricDateSpottedEl: document.getElementById('metricDateSpotted'),
+    metricPriceSpottedEl: document.getElementById('metricPriceSpotted'),
+    metricPriceChangeEl: document.getElementById('metricPriceChange'),
+    zoomInBtn: document.getElementById('zoomInBtn'),
+    zoomOutBtn: document.getElementById('zoomOutBtn'),
+    resetZoomBtn: document.getElementById('resetZoomBtn'),
+  };
 
-  let priceChart;
-  let rsiChart;
-  let currentInterval = intervalSelect?.value || '1d';
-  let baseHistory = [];
-  let overlayCounter = 1;
-  const overlays = new Map(); // id -> overlay definition
-  let defaultTimeRange = null;
-  let shouldResetZoom = false;
+  // Verify required elements exist
+  const requiredElements = ['intervalSelect', 'priceCanvas', 'lastUpdatedAt'];
+  const missingElements = requiredElements.filter(key => !elements[key]);
+
+  if (missingElements.length > 0) {
+    console.error('Missing required elements:', missingElements);
+    return;
+  }
+
+  // State management
+  const state = {
+    charts: {
+      price: null,
+      rsi: null,
+    },
+    data: {
+      currentInterval: elements.intervalSelect?.value || '1d',
+      baseHistory: [],
+      defaultTimeRange: null,
+      cachedPricePoints: null,
+      lastHistoryRef: null,
+    },
+    ui: {
+      shouldResetZoom: false,
+      overlayCounter: 1,
+      overlays: new Map(),
+    },
+    requests: {
+      currentHistory: null,
+      overlayRefresh: null,
+    },
+    timers: {
+      chartUpdate: null,
+    },
+  };
 
   const overlayTemplate = {
     type: 'sma',
@@ -50,44 +96,89 @@
     color: '#2563eb',
   };
 
-  initCharts();
-  bindEvents();
-  loadOverview();
-  loadSnapshot();
-  loadHistory();
-  loadNews();
+  // Cleanup function to prevent memory leaks
+  function cleanup() {
+    if (state.charts.price) {
+      state.charts.price.destroy();
+      state.charts.price = null;
+    }
+    if (state.charts.rsi) {
+      state.charts.rsi.destroy();
+      state.charts.rsi = null;
+    }
+  }
+
+  // Register cleanup on page unload
+  window.addEventListener('beforeunload', cleanup);
+
+  // Wait for all deferred scripts to load before initializing
+  function initializeApp() {
+    // Check if Chart.js is loaded
+    if (typeof Chart === 'undefined') {
+      console.error('Chart.js library not loaded');
+      return;
+    }
+
+    // Initialize
+    initCharts();
+    bindEvents();
+    loadOverview();
+    loadSnapshot();
+    loadHistory();
+    loadNews();
+  }
+
+  // Run initialization when DOM and all deferred scripts are ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initializeApp);
+  } else {
+    // DOM already loaded, check if libraries are ready
+    if (typeof Chart !== 'undefined') {
+      initializeApp();
+    } else {
+      // Wait for window load event to ensure all deferred scripts are loaded
+      window.addEventListener('load', initializeApp);
+    }
+  }
 
   async function loadOverview() {
+    if (!elements.companyNameEl || !elements.summaryDescriptionEl) return;
     try {
       const res = await fetch(`/api/stocks/${encodeURIComponent(symbol)}/overview`);
       if (!res.ok) throw new Error('Failed to fetch overview');
       const data = await res.json();
       const name = data.longName || data.shortName || symbol;
-      companyNameEl.textContent = name;
-      summaryNameEl.textContent = name;
-      summarySectorEl.textContent = data.sector || '—';
-      summaryIndustryEl.textContent = data.industry || '—';
-      summaryMarketCapEl.textContent = formatMarketCap(data.market_cap) || '—';
-      summaryWebsiteEl.innerHTML = data.website
-        ? `<a href="${escapeHtml(data.website)}" target="_blank" rel="noopener">${escapeHtml(data.website)}</a>`
-        : '—';
-      summaryDescriptionEl.textContent = data.longBusinessSummary || 'No company summary available.';
-
-      if (data.last_price != null) {
-        priceValueEl.textContent = formatPrice(data.last_price);
-      } else {
-        priceValueEl.textContent = '—';
+      if (elements.companyNameEl) elements.companyNameEl.textContent = name;
+      if (elements.summaryNameEl) elements.summaryNameEl.textContent = name;
+      if (elements.summarySectorEl) elements.summarySectorEl.textContent = data.sector || '—';
+      if (elements.summaryIndustryEl) elements.summaryIndustryEl.textContent = data.industry || '—';
+      if (elements.summaryMarketCapEl) elements.summaryMarketCapEl.textContent = formatMarketCap(data.market_cap) || '—';
+      if (elements.summaryWebsiteEl) {
+        elements.summaryWebsiteEl.innerHTML = data.website
+          ? `<a href="${escapeHtml(data.website)}" target="_blank" rel="noopener">${escapeHtml(data.website)}</a>`
+          : '—';
       }
-      priceCurrencyEl.textContent = data.currency ? data.currency.toUpperCase() : '';
+      if (elements.summaryDescriptionEl) {
+        elements.summaryDescriptionEl.textContent = data.longBusinessSummary || 'No company summary available.';
+      }
+
+      if (data.last_price != null && elements.priceValueEl) {
+        elements.priceValueEl.textContent = formatPrice(data.last_price);
+      } else if (elements.priceValueEl) {
+        elements.priceValueEl.textContent = '—';
+      }
+      if (elements.priceCurrencyEl) {
+        elements.priceCurrencyEl.textContent = data.currency ? data.currency.toUpperCase() : '';
+      }
     } catch (err) {
-      console.error(err);
-      companyNameEl.textContent = 'Overview unavailable';
-      summaryDescriptionEl.textContent = 'Could not load company summary.';
+      console.error('Error loading overview:', err);
+      if (elements.companyNameEl) elements.companyNameEl.textContent = 'Overview unavailable';
+      if (elements.summaryDescriptionEl) elements.summaryDescriptionEl.textContent = 'Could not load company summary.';
     }
   }
 
   async function loadSnapshot() {
-    if (!metricDateSpottedEl || !metricPriceSpottedEl || !metricPriceChangeEl) return;
+    if (!elements.metricDateSpottedEl || !elements.metricPriceSpottedEl || !elements.metricPriceChangeEl) return;
     try {
       const res = await fetch(`/api/stocks/${encodeURIComponent(symbol)}/snapshot`);
       if (res.status === 404) {
@@ -104,43 +195,47 @@
   }
 
   function renderSnapshot(snapshot) {
-    if (!metricDateSpottedEl || !metricPriceSpottedEl || !metricPriceChangeEl) return;
+    if (!elements.metricDateSpottedEl || !elements.metricPriceSpottedEl || !elements.metricPriceChangeEl) return;
     const dateLabel = snapshot?.date_spotted || snapshot?.date_added;
     const formattedDate = formatDate(dateLabel);
-    metricDateSpottedEl.textContent = formattedDate || '—';
+    elements.metricDateSpottedEl.textContent = formattedDate || '—';
 
     const initialPrice = snapshot?.initial_price;
-    metricPriceSpottedEl.textContent = initialPrice != null && !Number.isNaN(Number(initialPrice))
+    elements.metricPriceSpottedEl.textContent = initialPrice != null && !Number.isNaN(Number(initialPrice))
       ? formatPrice(initialPrice)
       : '—';
 
-    updatePercentDisplay(metricPriceChangeEl, snapshot?.percent_change);
+    updatePercentDisplay(elements.metricPriceChangeEl, snapshot?.percent_change);
 
-    if (snapshot?.current_price != null && !Number.isNaN(Number(snapshot.current_price))) {
-      priceValueEl.textContent = formatPrice(snapshot.current_price);
+    if (snapshot?.current_price != null && !Number.isNaN(Number(snapshot.current_price)) && elements.priceValueEl) {
+      elements.priceValueEl.textContent = formatPrice(snapshot.current_price);
     }
   }
 
   async function loadHistory() {
-    const interval = currentInterval;
+    const interval = state.data.currentInterval;
     try {
       const res = await fetch(`/api/stocks/${encodeURIComponent(symbol)}/history?interval=${encodeURIComponent(interval)}`);
       if (!res.ok) throw new Error('Failed to fetch price history');
       const data = await res.json();
-      baseHistory = Array.isArray(data.points) ? data.points : [];
-      shouldResetZoom = true;
+      state.data.baseHistory = Array.isArray(data.points) ? data.points : [];
+      state.ui.shouldResetZoom = true;
       updatePriceChart();
-      lastUpdatedAt.textContent = `Updated: ${new Date().toLocaleString()}`;
+      if (elements.lastUpdatedAt) {
+        elements.lastUpdatedAt.textContent = `Updated: ${new Date().toLocaleString()}`;
+      }
       await refreshAllOverlays();
-      if (rsiToggle.checked) {
+      if (elements.rsiToggle?.checked) {
         await loadRsi(true);
       }
     } catch (err) {
       console.error(err);
-      baseHistory = [];
-      shouldResetZoom = true;
+      state.data.baseHistory = [];
+      state.ui.shouldResetZoom = true;
       updatePriceChart();
-      lastUpdatedAt.textContent = 'Updated: failed to load';
+      if (elements.lastUpdatedAt) {
+        elements.lastUpdatedAt.textContent = 'Updated: failed to load';
+      }
     }
   }
 
@@ -153,13 +248,16 @@
       renderNews(articles);
     } catch (err) {
       console.error(err);
-      newsListEl.innerHTML = '<li class="muted">No news available right now.</li>';
+      if (elements.newsListEl) {
+        elements.newsListEl.innerHTML = '<li class="muted">No news available right now.</li>';
+      }
     }
   }
 
   function initCharts() {
+    if (!elements.priceCanvas) return;
     registerZoomPlugin();
-    priceChart = new Chart(priceCanvas, {
+    state.charts.price = new Chart(elements.priceCanvas, {
       type: 'line',
       data: { datasets: [] },
       options: {
@@ -218,9 +316,9 @@
   }
 
   function updatePriceChart() {
-    if (!priceChart) return;
+    if (!state.charts.price) return;
     const datasets = [];
-    const pricePoints = mapHistoryToPoints(baseHistory, 'close');
+    const pricePoints = mapHistoryToPoints(state.data.baseHistory, 'close');
     datasets.push({
       id: 'price',
       label: `${symbol} Close`,
@@ -231,18 +329,18 @@
       tension: 0.15,
       spanGaps: true,
     });
-    overlays.forEach((overlay) => {
+    state.ui.overlays.forEach((overlay) => {
       if (overlay.dataset) {
         datasets.push(overlay.dataset);
       }
     });
-    priceChart.data.datasets = datasets;
-    if (shouldResetZoom) {
-      defaultTimeRange = computeDefaultRange(pricePoints);
+    state.charts.price.data.datasets = datasets;
+    if (state.ui.shouldResetZoom) {
+      state.data.defaultTimeRange = computeDefaultRange(pricePoints);
       resetZoomInternal();
-      shouldResetZoom = false;
+      state.ui.shouldResetZoom = false;
     } else {
-      priceChart.update();
+      state.charts.price.update();
     }
   }
 
@@ -270,33 +368,33 @@
   }
 
   function resetZoomInternal() {
-    if (!priceChart) return;
-    const canUsePlugin = typeof priceChart.resetZoom === 'function';
+    if (!state.charts.price) return;
+    const canUsePlugin = typeof state.charts.price.resetZoom === 'function';
     if (canUsePlugin) {
       try {
-        priceChart.resetZoom();
+        state.charts.price.resetZoom();
       } catch (err) {
         console.warn('Falling back to manual zoom reset', err);
         manualResetZoom();
       }
-      priceChart.update('none');
+      state.charts.price.update('none');
       return;
     }
     manualResetZoom();
-    priceChart.update('none');
+    state.charts.price.update('none');
   }
 
   function zoomChartByFactor(factor) {
-    if (!priceChart) return;
-    if (typeof priceChart.zoom === 'function') {
+    if (!state.charts.price) return;
+    if (typeof state.charts.price.zoom === 'function') {
       try {
-        priceChart.zoom(factor);
-        priceChart.update('none');
+        state.charts.price.zoom(factor);
+        state.charts.price.update('none');
         return;
       } catch (err) {
         try {
-          priceChart.zoom({ x: { factor } });
-          priceChart.update('none');
+          state.charts.price.zoom({ x: { factor } });
+          state.charts.price.update('none');
           return;
         } catch (innerErr) {
           console.warn('Zoom plugin call failed, using manual zoom', innerErr);
@@ -307,55 +405,55 @@
   }
 
   function manualZoom(factor) {
-    if (!priceChart || !defaultTimeRange) return;
-    const scale = priceChart.scales?.x;
+    if (!state.charts.price || !state.data.defaultTimeRange) return;
+    const scale = state.charts.price.scales?.x;
     if (!scale) return;
     const currentRange = getCurrentRange(scale);
     if (!currentRange) return;
     const { min: currentMin, max: currentMax } = currentRange;
-    const defaultRange = defaultTimeRange.max - defaultTimeRange.min;
+    const defaultRange = state.data.defaultTimeRange.max - state.data.defaultTimeRange.min;
     if (!Number.isFinite(defaultRange) || defaultRange <= 0) return;
     const currentSpan = currentMax - currentMin;
     if (!Number.isFinite(currentSpan) || currentSpan <= 0) return;
     const targetSpan = currentSpan / factor;
-    const minSpan = Math.max(defaultRange / 200, 24 * 60 * 60 * 1000); // avoid over-zooming beyond a day
+    const minSpan = Math.max(defaultRange / ZOOM_CONSTANTS.MAX_ZOOM_DIVISOR, ZOOM_CONSTANTS.MIN_SPAN_MS);
     const nextSpan = Math.max(minSpan, targetSpan);
     if (nextSpan >= defaultRange) {
       manualResetZoom();
-      priceChart.update('none');
+      state.charts.price.update('none');
       return;
     }
     const center = currentMin + currentSpan / 2;
     let nextMin = center - nextSpan / 2;
     let nextMax = center + nextSpan / 2;
 
-    if (nextMin < defaultTimeRange.min) {
-      const diff = defaultTimeRange.min - nextMin;
+    if (nextMin < state.data.defaultTimeRange.min) {
+      const diff = state.data.defaultTimeRange.min - nextMin;
       nextMin += diff;
       nextMax += diff;
     }
-    if (nextMax > defaultTimeRange.max) {
-      const diff = nextMax - defaultTimeRange.max;
+    if (nextMax > state.data.defaultTimeRange.max) {
+      const diff = nextMax - state.data.defaultTimeRange.max;
       nextMin -= diff;
       nextMax -= diff;
     }
-    nextMin = Math.max(defaultTimeRange.min, nextMin);
-    nextMax = Math.min(defaultTimeRange.max, nextMax);
+    nextMin = Math.max(state.data.defaultTimeRange.min, nextMin);
+    nextMax = Math.min(state.data.defaultTimeRange.max, nextMax);
     if (nextMax <= nextMin) {
       manualResetZoom();
-      priceChart.update('none');
+      state.charts.price.update('none');
       return;
     }
     setScaleRange(nextMin, nextMax);
-    priceChart.update('none');
+    state.charts.price.update('none');
   }
 
   function manualResetZoom() {
-    const xOptions = priceChart?.options?.scales?.x;
+    const xOptions = state.charts.price?.options?.scales?.x;
     if (!xOptions) return;
-    if (defaultTimeRange) {
-      xOptions.min = defaultTimeRange.min;
-      xOptions.max = defaultTimeRange.max;
+    if (state.data.defaultTimeRange) {
+      xOptions.min = state.data.defaultTimeRange.min;
+      xOptions.max = state.data.defaultTimeRange.max;
     } else {
       delete xOptions.min;
       delete xOptions.max;
@@ -363,7 +461,7 @@
   }
 
   function setScaleRange(min, max) {
-    const xOptions = priceChart?.options?.scales?.x;
+    const xOptions = state.charts.price?.options?.scales?.x;
     if (!xOptions) return;
     xOptions.min = min;
     xOptions.max = max;
@@ -371,8 +469,8 @@
 
   function getCurrentRange(scale) {
     if (!scale) return null;
-    const resolvedMin = Number.isFinite(scale.min) ? scale.min : defaultTimeRange?.min;
-    const resolvedMax = Number.isFinite(scale.max) ? scale.max : defaultTimeRange?.max;
+    const resolvedMin = Number.isFinite(scale.min) ? scale.min : state.data.defaultTimeRange?.min;
+    const resolvedMax = Number.isFinite(scale.max) ? scale.max : state.data.defaultTimeRange?.max;
     if (!Number.isFinite(resolvedMin) || !Number.isFinite(resolvedMax) || resolvedMax <= resolvedMin) {
       return null;
     }
@@ -451,7 +549,7 @@
   }
 
   async function refreshAllOverlays() {
-    const overlayPromises = Array.from(overlays.values()).map(async (overlay) => {
+    const overlayPromises = Array.from(state.ui.overlays.values()).map(async (overlay) => {
       const indicator = await fetchIndicatorData(overlay.type, overlay.window);
       overlay.dataset = buildOverlayDataset(overlay, indicator);
     });
@@ -460,7 +558,7 @@
   }
 
   async function fetchIndicatorData(indicatorType, period) {
-    const url = `/api/stocks/${encodeURIComponent(symbol)}/indicators?type=${indicatorType}&interval=${encodeURIComponent(currentInterval)}&windows=${period}`;
+    const url = `/api/stocks/${encodeURIComponent(symbol)}/indicators?type=${indicatorType}&interval=${encodeURIComponent(state.data.currentInterval)}&windows=${period}`;
     const res = await fetch(url);
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -486,69 +584,78 @@
   }
 
   function bindEvents() {
-    intervalSelect.addEventListener('change', async (event) => {
-      currentInterval = event.target.value || '1d';
-      await loadHistory();
-    });
+    if (elements.intervalSelect) {
+      elements.intervalSelect.addEventListener('change', async (event) => {
+        state.data.currentInterval = event.target.value || '1d';
+        await loadHistory();
+      });
+    }
 
-    overlayForm.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const indicator = (overlayTypeEl.value || overlayTemplate.type).toLowerCase();
-      const period = parseInt(overlayWindowEl.value, 10);
-      const color = overlayColorEl.value || overlayTemplate.color;
-      if (!Number.isInteger(period) || period <= 0) {
-        alert('Period must be a positive integer.');
-        return;
-      }
-      try {
-        const values = await fetchIndicatorData(indicator, period);
-        const id = overlayCounter++;
-        const overlayDef = { id, type: indicator, window: period, color };
-        overlayDef.dataset = buildOverlayDataset(overlayDef, values);
-        overlays.set(id, overlayDef);
-        appendOverlayListItem(overlayDef);
-        updatePriceChart();
-      } catch (err) {
-        console.error(err);
-        alert(err.message || 'Unable to add indicator.');
-      }
-    });
+    if (elements.overlayForm) {
+      elements.overlayForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const indicator = (elements.overlayTypeEl?.value || overlayTemplate.type).toLowerCase();
+        const period = parseInt(elements.overlayWindowEl?.value, 10);
+        const color = elements.overlayColorEl?.value || overlayTemplate.color;
+        if (!Number.isInteger(period) || period <= 0) {
+          alert('Period must be a positive integer.');
+          return;
+        }
+        try {
+          const values = await fetchIndicatorData(indicator, period);
+          const id = state.ui.overlayCounter++;
+          const overlayDef = { id, type: indicator, window: period, color };
+          overlayDef.dataset = buildOverlayDataset(overlayDef, values);
+          state.ui.overlays.set(id, overlayDef);
+          appendOverlayListItem(overlayDef);
+          updatePriceChart();
+        } catch (err) {
+          console.error(err);
+          alert(err.message || 'Unable to add indicator.');
+        }
+      });
+    }
 
-    rsiToggle.addEventListener('change', async () => {
-      if (rsiToggle.checked) {
-        await loadRsi(true);
-      } else {
-        hideRsiChart();
-      }
-    });
+    if (elements.rsiToggle) {
+      elements.rsiToggle.addEventListener('change', async () => {
+        if (elements.rsiToggle.checked) {
+          await loadRsi(true);
+        } else {
+          hideRsiChart();
+        }
+      });
+    }
 
-    rsiApplyBtn.addEventListener('click', async (event) => {
-      event.preventDefault();
-      if (!rsiToggle.checked) {
-        rsiToggle.checked = true;
-      }
-      await loadRsi(false);
-    });
+    if (elements.rsiApplyBtn) {
+      elements.rsiApplyBtn.addEventListener('click', async (event) => {
+        event.preventDefault();
+        if (elements.rsiToggle && !elements.rsiToggle.checked) {
+          elements.rsiToggle.checked = true;
+        }
+        await loadRsi(false);
+      });
+    }
 
-    zoomInBtn?.addEventListener('click', () => {
-      zoomChartByFactor(1.4);
+    elements.zoomInBtn?.addEventListener('click', () => {
+      zoomChartByFactor(ZOOM_CONSTANTS.IN_FACTOR);
     });
-    zoomOutBtn?.addEventListener('click', () => {
-      zoomChartByFactor(0.7);
+    elements.zoomOutBtn?.addEventListener('click', () => {
+      zoomChartByFactor(ZOOM_CONSTANTS.OUT_FACTOR);
     });
-    resetZoomBtn?.addEventListener('click', () => {
+    elements.resetZoomBtn?.addEventListener('click', () => {
       resetZoomInternal();
     });
   }
 
   async function loadRsi(autoToggle) {
-    const period = parseInt(rsiPeriodEl.value, 10);
+    if (!elements.rsiPeriodEl) return;
+    const period = parseInt(elements.rsiPeriodEl.value, 10);
     if (!Number.isInteger(period) || period <= 1) {
       alert('RSI period must be greater than 1.');
       return;
     }
     try {
-      const res = await fetch(`/api/stocks/${encodeURIComponent(symbol)}/rsi?interval=${encodeURIComponent(currentInterval)}&period=${period}`);
+      const res = await fetch(`/api/stocks/${encodeURIComponent(symbol)}/rsi?interval=${encodeURIComponent(state.data.currentInterval)}&period=${period}`);
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || 'Failed to fetch RSI');
@@ -558,30 +665,33 @@
       renderRsiChart(values, period);
     } catch (err) {
       console.error(err);
-      if (autoToggle) {
-        rsiToggle.checked = false;
+      if (autoToggle && elements.rsiToggle) {
+        elements.rsiToggle.checked = false;
       }
       alert(err.message || 'Unable to load RSI data.');
     }
   }
 
   function hideRsiChart() {
-    rsiWrapper.classList.add('hidden');
-    if (rsiChart) {
-      rsiChart.destroy();
-      rsiChart = null;
+    if (elements.rsiWrapper) {
+      elements.rsiWrapper.classList.add('hidden');
+    }
+    if (state.charts.rsi) {
+      state.charts.rsi.destroy();
+      state.charts.rsi = null;
     }
   }
 
   function renderRsiChart(values, period) {
-    rsiWrapper.classList.remove('hidden');
+    if (!elements.rsiWrapper || !elements.rsiCanvas) return;
+    elements.rsiWrapper.classList.remove('hidden');
     const points = mapIndicatorToPoints(values);
-    if (rsiChart) {
-      rsiChart.data.datasets = buildRsiDatasets(points, period);
-      rsiChart.update();
+    if (state.charts.rsi) {
+      state.charts.rsi.data.datasets = buildRsiDatasets(points, period);
+      state.charts.rsi.update();
       return;
     }
-    rsiChart = new Chart(rsiCanvas, {
+    state.charts.rsi = new Chart(elements.rsiCanvas, {
       type: 'line',
       data: { datasets: buildRsiDatasets(points, period) },
       options: {
@@ -613,8 +723,8 @@
       tension: 0.1,
       spanGaps: true,
     };
-    const upper = buildHorizontalLineDataset('RSI 70', 70, points, '#f97316');
-    const lower = buildHorizontalLineDataset('RSI 30', 30, points, '#0ea5e9');
+    const upper = buildHorizontalLineDataset(`RSI ${RSI_THRESHOLDS.OVERBOUGHT}`, RSI_THRESHOLDS.OVERBOUGHT, points, '#f97316');
+    const lower = buildHorizontalLineDataset(`RSI ${RSI_THRESHOLDS.OVERSOLD}`, RSI_THRESHOLDS.OVERSOLD, points, '#0ea5e9');
     return [base, upper, lower];
   }
 
@@ -632,6 +742,7 @@
   }
 
   function appendOverlayListItem(overlay) {
+    if (!elements.overlayListEl) return;
     const li = document.createElement('li');
     li.className = 'overlay-item';
     li.dataset.id = overlay.id;
@@ -643,16 +754,17 @@
       <button type="button" class="btn btn-small" data-action="remove">Remove</button>
     `;
     li.querySelector('button[data-action="remove"]').addEventListener('click', () => {
-      overlays.delete(overlay.id);
+      state.ui.overlays.delete(overlay.id);
       li.remove();
       updatePriceChart();
     });
-    overlayListEl.appendChild(li);
+    elements.overlayListEl.appendChild(li);
   }
 
   function renderNews(articles) {
+    if (!elements.newsListEl) return;
     if (!articles.length) {
-      newsListEl.innerHTML = '<li class="muted">No recent articles found.</li>';
+      elements.newsListEl.innerHTML = '<li class="muted">No recent articles found.</li>';
       return;
     }
     const items = articles.map((article) => {
@@ -667,7 +779,7 @@
         </li>
       `;
     });
-    newsListEl.innerHTML = items.join('');
+    elements.newsListEl.innerHTML = items.join('');
   }
 
   function mapHistoryToPoints(history, key) {
